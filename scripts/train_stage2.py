@@ -7,12 +7,18 @@ import sys
 import argparse
 import yaml
 import torch
-from train2 import Stage2Trainer, SlotPiLoss, create_optimizer
+from train2 import Stage2Trainer, create_optimizer
 from models import SlotPiModel
 from data import BaseVideoDataset
 from config.base_config import get_config
 
+def setup_cuda():
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')
+
 def main():
+    setup_cuda()
     parser = argparse.ArgumentParser(description='SlotPi Stage 2: Physics + Spatiotemporal Training')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--workdir', type=str, default='./experiments/stage2/default', help='Working directory')
@@ -46,11 +52,10 @@ def main():
     train_dataset = BaseVideoDataset(cfg, split='train')
     val_dataset = BaseVideoDataset(cfg, split='val')
     train_loader = train_dataset.get_dataloader(cfg.batch_size)
-    val_loader = val_dataset.get_dataloader(cfg.val_batch_size)
+    val_loader = val_dataset.get_dataloader(cfg.batch_size)
 
     # 构建训练器
-    loss_fn = SlotPiLoss(cfg)
-    trainer = Stage2Trainer(model, optimizer, scheduler, cfg, loss_fn)
+    trainer = Stage2Trainer(model, optimizer, scheduler, cfg)
 
     # 恢复 checkpoint（如果需要）
     start_epoch = 0

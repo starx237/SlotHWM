@@ -29,7 +29,7 @@ class SlotPiConfig:
     burnin_frames: int = 6
     rollout_frames: int = 10
     buffer_len: int = 10
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     weight_decay: float = 0.0
     max_grad_norm: float = 1.0
@@ -103,7 +103,7 @@ class CLEVRERStage1Config(Stage1Config):
     num_slots: int = 7
     slot_dim: int = 128
     burnin_frames: int = 6
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     num_epochs: int = 21
 
@@ -115,7 +115,7 @@ class CLEVRERStage2Config(Stage2Config):
     slot_dim: int = 128
     burnin_frames: int = 6
     rollout_frames: int = 10
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     num_epochs: int = 50
 
@@ -126,7 +126,7 @@ class OBJ3DStage1Config(Stage1Config):
     num_slots: int = 7
     slot_dim: int = 128
     burnin_frames: int = 6
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     num_epochs: int = 21
 
@@ -138,7 +138,7 @@ class OBJ3DStage2Config(Stage2Config):
     slot_dim: int = 128
     burnin_frames: int = 6
     rollout_frames: int = 10
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     num_epochs: int = 50
 
@@ -150,7 +150,7 @@ class PhysionStage2Config(Stage2Config):
     slot_dim: int = 128
     burnin_frames: int = 6
     rollout_frames: int = 10
-    batch_size: int = 64
+    batch_size: int = 32
     learning_rate: float = 2e-4
     num_epochs: int = 50
 
@@ -166,7 +166,7 @@ class FluidStage2Config(Stage2Config):
     num_layers: int = 2
     burnin_frames: int = 6
     rollout_frames: int = 10
-    batch_size: int = 16
+    batch_size: int = 8
     learning_rate: float = 1e-4
     weight_decay: float = 0.01
     num_epochs: int = 50
@@ -180,6 +180,6 @@ class RealWorldStage2Config(Stage2Config):
     num_heads: int = 4
     burnin_frames: int = 10
     rollout_frames: int = 15
-    batch_size: int = 64
+    batch_size: int = 24
     learning_rate: float = 2e-4
     num_epochs: int = 40

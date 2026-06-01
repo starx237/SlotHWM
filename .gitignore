@@ -1,6 +1,54 @@
+# Documentation
 guide.md
 guide.pdf
 idea.md
 localreadme.md
 plan.md
 SlotPi.pdf
+
+# Logs
+*.log
+log.txt
+scripts/log.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Data
+data/obj3d/
+downloads/
+*.tfrecords
+
+# PyTorch saved files (checkpoints, processed data)
+*.pt
+
+# Auto-generated protobuf code
+*_pb2.py
+
+# Experiments & Output
+experiments/
+output/
+pretrained/
+wandb/
+runs/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# External reference code (JAX version, paper source, etc.)
+STATM-main/
+slotpitex/

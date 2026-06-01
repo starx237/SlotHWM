@@ -7,12 +7,18 @@ import sys
 import argparse
 import yaml
 import torch
-from slotpi.train1 import Stage1Trainer, ReconstructionLoss, create_optimizer
+from slotpi.train1 import Stage1Trainer, create_optimizer
 from slotpi.models import STATMSAVi
 from slotpi.data import BaseVideoDataset
 from slotpi.config.base_config import get_config
 
+def setup_cuda():
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')
+
 def main():
+    setup_cuda()
     parser = argparse.ArgumentParser(description='SlotPi Stage 1: STATM-SAVi Training')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--workdir', type=str, default='./experiments/stage1/default', help='Working directory')
@@ -37,11 +43,10 @@ def main():
     train_dataset = BaseVideoDataset(cfg, split='train')
     val_dataset = BaseVideoDataset(cfg, split='val')
     train_loader = train_dataset.get_dataloader(cfg.batch_size)
-    val_loader = val_dataset.get_dataloader(cfg.val_batch_size)
+    val_loader = val_dataset.get_dataloader(cfg.batch_size)
 
     # 构建训练器
-    loss_fn = ReconstructionLoss()
-    trainer = Stage1Trainer(model, optimizer, scheduler, cfg, loss_fn)
+    trainer = Stage1Trainer(model, optimizer, scheduler, cfg)
 
     # 开始训练
     os.makedirs(os.path.join(args.workdir, 'checkpoints'), exist_ok=True)

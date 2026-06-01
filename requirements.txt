@@ -1,6 +1,7 @@
 # SlotPi - Python Dependencies
-torch>=2.0.0
-torchvision>=0.15.0
+# CUDA 11.8 兼容版本（PyTorch <= 2.5.1，2.6+ 需要 CUDA 12.4+）
+torch>=2.0.0,<=2.5.1
+torchvision>=0.15.0,<=0.20.0
 numpy>=1.22.0
 einops>=0.6.0
 pyyaml>=6.0

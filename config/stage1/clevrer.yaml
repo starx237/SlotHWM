@@ -2,7 +2,7 @@ dataset: "clevrer"
 num_slots: 7
 slot_dim: 128
 burnin_frames: 6
-batch_size: 64
+batch_size: 32
 learning_rate: 2e-4
 num_epochs: 21
 encoder_backbone: "cnn"

@@ -2,7 +2,7 @@ dataset: "realworld"
 num_slots: 6
 slot_dim: 192
 burnin_frames: 6
-batch_size: 64
+batch_size: 24
 learning_rate: 2e-4
 num_epochs: 46
 encoder_backbone: "resnet18"

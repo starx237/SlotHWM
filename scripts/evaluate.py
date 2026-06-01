@@ -12,7 +12,13 @@ from models import SlotPiModel, STATMSAVi
 from data import BaseVideoDataset
 from config.base_config import get_config
 
+def setup_cuda():
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')
+
 def main():
+    setup_cuda()
     parser = argparse.ArgumentParser(description='SlotPi Evaluation')
     parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--stage', type=int, default=2, choices=[1, 2], help='Model stage (1=STATM-SAVi, 2=SlotPi)')
@@ -37,7 +43,7 @@ def main():
     print(f'Loaded checkpoint from {args.checkpoint} (epoch {state.get("epoch", "?")})')
 
     val_dataset = BaseVideoDataset(cfg, split='val')
-    val_loader = val_dataset.get_dataloader(cfg.val_batch_size, shuffle=False)
+    val_loader = val_dataset.get_dataloader(cfg.batch_size, shuffle=False)
 
     evaluator = Evaluator(cfg)
     results = evaluator.evaluate(model, val_loader)
