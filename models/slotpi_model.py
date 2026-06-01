@@ -134,8 +134,10 @@ class SlotPiModel(nn.Module):
             C = self.compute_C(buffer)  # (B, N, D')
 
         # ============ 物理模块 ============
-        # 传入的是完整的 slot，但物理模块内部只使用后半段（动态特征）
-        q_next, p_next = self.physics_module(slots, buffer, C=C)
+        # 只使用后半段（动态特征）
+        slots_dyn = slots[:, :, D_sta:]  # (B, N, D/2)
+        buffer_dyn = buffer[:, :, :, D_sta:]  # (B, T, N, D/2)
+        q_next, p_next = self.physics_module(slots_dyn, buffer_dyn, C=C)
         # q_next, p_next: (B, N, D/2)
 
         # 融合：MLP_S(Q_next, C) → S^d_next，与静态部分拼接得到完整物理预测
@@ -154,7 +156,7 @@ class SlotPiModel(nn.Module):
         pred_slots_next = slot_phys + st_out  # (B, N, D)
 
         if return_energy:
-            q, p = self.physics_module.qp_net(slots, buffer)
+            q, p = self.physics_module.qp_net(slots_dyn, buffer_dyn)
             energy = self.physics_module.H_net(q, p, C=C)
             return pred_slots_next, energy
 

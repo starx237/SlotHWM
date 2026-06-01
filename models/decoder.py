@@ -72,14 +72,14 @@ class SpatialBroadcastDecoder(nn.Module):
         out = self.out_conv(x)
 
         if self.predict_mask:
-            # 对 alpha 通道做 softmax（在 Slot 维度上做归一化）
-            alpha = torch.softmax(out[:, -1:], dim=1)
-            rgb = out[:, :-1]
-            # Slot 的 RGB 值按 alpha 加权求和
-            output = (rgb * alpha).sum(dim=1, keepdim=True)
-            output = output.view(B, -1, S, S)
+            out = out.reshape(B, N, -1, S, S)
+            alpha = torch.softmax(out[:, :, -1:], dim=1)
+            rgb = out[:, :, :-1]
+            blended = (rgb * alpha).sum(dim=1)
+            output = blended.view(B, -1, S, S)
         else:
-            output = out.mean(dim=1, keepdim=False)
+            out = out.reshape(B, N, -1, S, S)
+            output = out.mean(dim=1)
             output = output.view(B, -1, S, S)
 
         return output

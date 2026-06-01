@@ -1,0 +1,73 @@
+# SlotPi 端到端训练配置 — OBJ3D
+dataset: "obj3d"
+data_root: "./data/obj3d"
+num_workers: 4
+
+# 数据滑动窗口
+slide_stride: 5
+
+# 编码器
+encoder_type: "cnn"
+in_channels: 3
+img_size: 64
+encoder_hidden: 32
+
+# Slot Attention
+num_slots: 7
+slot_dim: 128
+slot_hidden: 128
+slot_iters: 3
+
+# 解码器
+decoder_hidden: [64, 64, 64, 64]
+broadcast_size: [8, 8]
+
+# 物理模块
+hidden_dim: 256
+num_heads: 4
+qkv_size: 128
+mlp_size: 256
+num_layers: 2
+h_layers: 1
+out_mlp: false
+out_hidden_layers: 1
+pre_norm: false
+dropout_rate: 0.1
+delta_t: 0.125
+integrator_method: "Leapfrog"
+num_spatiotemporal_blocks: 2
+
+# 训练步数（STATM、SlotPi 基线 160k）
+num_steps: 160000
+batch_size: 32
+learning_rate: 0.0002
+weight_decay: 0.0
+max_grad_norm: 5.0
+num_frames: 16
+burnin_frames: 6
+rollout_frames: 4
+buffer_len: 10
+
+# 学习率调度（论文：前 2.5% 步数 warmup，余弦退火）
+warmup_steps: 4000
+
+# 损失权重
+lambda_slots: 0.1
+lambda_images: 1.0
+lambda_energy: 0.0
+lambda_static: 0.1
+lambda_rev: 5.0
+lambda_recon_burnin: 0.5
+lambda_recon_rollout: 5
+gamma_max: 1
+c_gamma: 15.0
+rev_mlp_hidden: 128
+
+# GRL 反向传播梯度裁剪
+rev_grad_max_norm: 5.0
+
+# 日志与存档
+log_every: 10
+save_every: 5000
+keep_last_checkpoints: 3
+workdir: "./experiments/obj3d"

@@ -1,145 +1,97 @@
+#!/usr/bin/env python3
+# SlotPi 端到端训练入口
+# Usage: python scripts/train.py --config config/obj3d.yaml --workdir experiments/obj3d
+
+import os, sys, argparse, yaml
 import torch
-import numpy as np
-import random
-import argparse
-import json
-import os
-from torch import nn
-from torch.utils.data import DataLoader
-from torch.optim import Adam, AdamW
-import torch.optim.lr_scheduler as lr_scheduler
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
+from types import SimpleNamespace
+from dotenv import load_dotenv
 
-from configs.config import SlotPiConfig, CLEVRERConfig, OBJ3DConfig, PhysionConfig, FluidConfig, RealWorldConfig
-from models.slotpi_model import SlotPiModel
-from models.encoder import FrameEncoder, CNNEncoder, ResNetEncoder
-from models.decoder import SpatialBroadcastDecoder
-from models.statm_savi import STATMSAVi
-from training.trainer import SlotPiTrainer, SatelliteLoss, SlotPiLoss
-from evaluation.evaluator import Evaluator
-from data.datasets import SlotPiDataset
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from models.slotpi import SlotPi
+from train import Trainer, create_optimizer
+from train.trainer import WandBLogger
+from data import get_dataset
 
 
-def set_seed(seed):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+def setup_cuda():
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision('high')
 
 
-def build_config(name):
-    config_map = {
-        "clevrer": CLEVRERConfig,
-        "obj3d": OBJ3DConfig,
-        "physion": PhysionConfig,
-        "fluid": FluidConfig,
-        "realworld": RealWorldConfig,
+def load_wandb_config():
+    load_dotenv()
+    enabled = os.getenv('WANDB_ENABLED', 'false').lower() == 'true'
+    return {
+        'enabled': enabled,
+        'api_key': os.getenv('WANDB_API_KEY', ''),
+        'project': os.getenv('WANDB_PROJECT', 'slotpi'),
+        'name': os.getenv('WANDB_NAME', ''),
+        'entity': os.getenv('WANDB_ENTITY', ''),
+        'notes': os.getenv('WANDB_NOTES', ''),
     }
-    return config_map[name]()
-
-
-def build_model(config):
-    encoder = None
-    if config.dataset in ["clevrer", "obj3d", "physion", "realworld"]:
-        if config.dataset == "realworld":
-            encoder = ResNetEncoder("resnet18", config.slot_dim)
-        else:
-            encoder = CNNEncoder(config.slot_dim)
-    elif config.dataset == "fluid":
-        encoder = ResNetEncoder("resnet18", config.slot_dim)
-
-    decoder = SpatialBroadcastDecoder(
-        slot_dim=config.slot_dim,
-        out_channels=3,
-        broadcast_size=8 if config.dataset != "realworld" else (12, 7),
-    )
-
-    model = SlotPiModel(
-        num_slots=config.num_slots,
-        embed_dim=config.slot_dim,
-        num_heads=config.num_heads,
-        qkv_size=config.qkv_size,
-        mlp_size=config.mlp_size,
-        num_layers=config.num_layers,
-        h_layers=config.h_layers,
-        out_mlp=config.out_mlp,
-        out_hidden_layers=config.out_hidden_layers,
-        pre_norm=config.pre_norm,
-        dropout_rate=config.dropout_rate,
-        delta_t=config.delta_t,
-        integrator_method=config.integrator_method,
-        lambda_phys=config.lambda_phys,
-        encoder=encoder,
-        decoder=decoder,
-    )
-    return model
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="clevrer", choices=["clevrer", "obj3d", "physion", "fluid", "realworld"])
-    parser.add_argument("--workdir", type=str, default="./output")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--mode", type=str, default="train", choices=["train", "eval", "extract"])
-    parser.add_argument("--resume", type=str, default=None)
+    setup_cuda()
+    parser = argparse.ArgumentParser(description='SlotPi Training')
+    parser.add_argument('--config', type=str, required=True)
+    parser.add_argument('--workdir', type=str, default='./experiments/default')
+    parser.add_argument('--resume', type=str, default=None)
+    parser.add_argument('--no-wandb', action='store_true', help='Force disable wandb')
     args = parser.parse_args()
 
-    set_seed(args.seed)
-    config = build_config(args.config)
-    config.workdir = args.workdir
+    with open(args.config, 'r') as f:
+        cfg_dict = yaml.safe_load(f)
+    cfg_dict['workdir'] = args.workdir
+    cfg = SimpleNamespace(**cfg_dict)
 
-    device = torch.device(config.device)
+    os.makedirs(os.path.join(args.workdir, 'checkpoints'), exist_ok=True)
+    os.makedirs(os.path.join(args.workdir, 'tb_logs'), exist_ok=True)
 
-    model = build_model(config).to(device)
-    print(f"Model params: {sum(p.numel() for p in model.parameters()):,}")
+    # WandB
+    wb_cfg = load_wandb_config()
+    use_wandb = wb_cfg['enabled'] and not args.no_wandb
+    wandb_logger = WandBLogger(enabled=use_wandb)
+    if use_wandb:
+        if wb_cfg['api_key']:
+            os.environ['WANDB_API_KEY'] = wb_cfg['api_key']
+        run_name = wb_cfg['name'] or os.path.basename(args.workdir)
+        import wandb
+        wandb_logger.init(
+            project=wb_cfg['project'],
+            entity=wb_cfg['entity'] or None,
+            name=run_name,
+            config=cfg_dict,
+            notes=wb_cfg['notes'] or None,
+            dir=args.workdir,
+            settings=wandb.Settings(sync_tensorboard=False),
+        )
+        print(f"WandB enabled: project={wb_cfg['project']}, name={run_name}")
+    else:
+        print("WandB disabled")
 
-    if args.mode == "train":
-        train_dataset = SlotPiDataset(config, split=config.train_split)
-        val_dataset = SlotPiDataset(config, split=config.val_split)
-        train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True,
-                                  num_workers=config.num_workers, pin_memory=config.pin_memory)
-        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False,
-                                num_workers=config.num_workers, pin_memory=config.pin_memory)
+    model = SlotPi(cfg)
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-        if config.optimizer == "adamw":
-            optimizer = AdamW(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
-        else:
-            optimizer = Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    optimizer, scheduler = create_optimizer(model.parameters(), cfg)
+    trainer = Trainer(model, optimizer, scheduler, cfg, wandb_logger=wandb_logger)
 
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=config.scheduler_step_size, gamma=config.scheduler_gamma) \
-            if hasattr(config, 'scheduler_step_size') else None
+    num_frames = getattr(cfg, 'num_frames', None) or (getattr(cfg, 'burnin_frames', 6) + getattr(cfg, 'rollout_frames', 10))
+    slide_stride = getattr(cfg, 'slide_stride', 1)
+    ds = get_dataset(cfg.dataset, data_path=cfg.data_root,
+                     num_frames=num_frames, stride=slide_stride)
+    loader = ds.get_dataloader(batch_size=cfg.batch_size, shuffle=True,
+                               num_workers=getattr(cfg, 'num_workers', 4))
 
-        trainer = SlotPiTrainer(model, optimizer, scheduler, config, device)
-        trainer.train(train_loader, val_loader, config.num_epochs)
+    start_step = 0
+    if args.resume and os.path.isfile(args.resume):
+        start_step, _ = trainer.load_checkpoint(args.resume)
+        print(f"Resumed from step {start_step}")
 
-    elif args.mode == "eval":
-        val_dataset = SlotPiDataset(config, split=config.val_split)
-        val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False,
-                                num_workers=config.num_workers, pin_memory=config.pin_memory)
-        checkpoint = torch.load(args.resume, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        evaluator = Evaluator(config)
-        results = evaluator.evaluate(model, val_loader)
-        print(f"Evaluation results: {results}")
-
-    elif args.mode == "extract":
-        # Extract slots using STATM-SAVi encoder
-        from models.statm_savi import STATMSAVi
-        statm_model = STATMSAVi(slot_dim=config.slot_dim, num_slots=config.num_slots).to(device)
-        statm_model.load_state_dict(torch.load(args.resume, map_location=device)["model_state_dict"])
-        dataset = SlotPiDataset(config, split=config.train_split)
-        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=config.num_workers)
-        all_slots = []
-        for batch in tqdm(loader, desc="Extracting slots"):
-            x = batch["video"].to(device)
-            with torch.no_grad():
-                slots = statm_model.encode_video(x)
-            all_slots.append(slots.cpu())
-        all_slots = torch.cat(all_slots, dim=0)
-        torch.save(all_slots, os.path.join(config.workdir, "extracted_slots.pt"))
-        print(f"Saved extracted slots with shape {all_slots.shape}")
+    trainer.train(loader, loader, cfg.num_steps, start_step=start_step)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

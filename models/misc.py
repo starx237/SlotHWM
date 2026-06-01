@@ -67,6 +67,32 @@ class Dense(nn.Linear):
     pass
 
 
+class GRLFunction(torch.autograd.Function):
+    '''梯度逆转层自定义算子。前向恒等映射，反向将梯度乘以 -gamma。'''
+    @staticmethod
+    def forward(ctx, x, gamma):
+        ctx.gamma = gamma
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.gamma * grad_output, None
+
+
+class GradientReversal(nn.Module):
+    '''梯度逆转层封装，用于对抗性解耦（idea.md §4 GRL）。
+       前向恒等，反向将梯度取反乘 gamma，迫使 S^d 洗去 C 的信息。'''
+    def __init__(self):
+        super().__init__()
+        self.gamma = 0.0
+
+    def set_gamma(self, g):
+        self.gamma = g
+
+    def forward(self, x):
+        return GRLFunction.apply(x, self.gamma)
+
+
 class PositionEmbedding(nn.Module):
     '''位置编码层，支持线性编码和傅里叶（正弦/余弦）编码两种方式'''
     def __init__(self, embedding_type, num_frequencies, embedding_dim):

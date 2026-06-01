@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple
 from einops import rearrange
+from models.misc import MLP
 
 
 class GeneralizedDotProductAttention(nn.Module):
@@ -379,7 +380,7 @@ class SlotAttention(nn.Module):
             # 注意力归一化（反向 softmax：沿 query 维度做 softmax）
             attn = F.softmax(attn, dim=1)
             # 加权聚合值
-            updates = torch.matmul(attn.transpose(-2, -1), q) / (attn.sum(dim=2).unsqueeze(-1) + self.epsilon)
+            updates = torch.matmul(attn, v) / (attn.sum(dim=-1).unsqueeze(-1) + self.epsilon)
             updates = self.dense_v(updates)
 
             # GRU 更新 Slot

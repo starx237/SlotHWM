@@ -26,6 +26,7 @@ downloads/
 
 # PyTorch saved files (checkpoints, processed data)
 *.pt
+*.pth
 
 # Auto-generated protobuf code
 *_pb2.py

@@ -40,23 +40,14 @@ class Integrator:
         self.method = method
 
     def _get_grads(self, q, p, hnn, C=None, remember_energy=False):
-        '''应用哈密顿方程计算 dq_dt 和 dp_dt（通过自动求导）'''
-        # 计算系统的哈密顿量（传入 C 用于三部分能量计算）
         energy = hnn(q=q, p=p, C=C) if C is not None else hnn(q=q, p=p)
-
-        # dq_dt = dH/dp（位置的时间导数）
-        dq_dt = torch.autograd.grad(energy,
-                                    p,
-                                    create_graph=True,
-                                    retain_graph=True,
+        dq_dt = torch.autograd.grad(energy, p, create_graph=True,
                                     grad_outputs=torch.ones_like(energy))[0]
-
-        # dp_dt = -dH/dq（动量的时间导数）
-        dp_dt = -torch.autograd.grad(energy,
-                                     q,
-                                     create_graph=True,
-                                     retain_graph=True,
+        dp_dt = -torch.autograd.grad(energy, q, create_graph=True,
                                      grad_outputs=torch.ones_like(energy))[0]
+        # 每步哈密顿梯度裁剪（clamp 可导，不破坏 autograd 图）
+        dq_dt = dq_dt / dq_dt.norm().clamp(min=1.0)
+        dp_dt = dp_dt / dp_dt.norm().clamp(min=1.0)
 
         if remember_energy:
             self.energy = energy.detach().cpu().numpy()
@@ -84,7 +75,7 @@ class Integrator:
         k4_q, k4_p = self._get_grads(q_3, p_3, hnn, C=self.C)
         q_next = q + self.delta_t * ((k1_q / 6) + (k2_q / 3) + (k3_q / 3) + (k4_q / 6))
         p_next = p + self.delta_t * ((k1_p / 6) + (k2_p / 3) + (k3_p / 3) + (k4_p / 6))
-        return q_next, p_next
+        return self._clamp_qp(q_next, p_next)
 
     def _lf_step(self, q, p, hnn):
         '''蛙跳（Leapfrog）法一步积分（二阶辛积分器）'''
@@ -93,7 +84,13 @@ class Integrator:
         q_next = q + p_next_half * self.delta_t
         _, dp_next_dt = self._get_grads(q_next, p_next_half, hnn, C=self.C)
         p_next = p_next_half + dp_next_dt * (self.delta_t) / 2
-        return q_next, p_next
+        return self._clamp_qp(q_next, p_next)
+
+    def _clamp_qp(self, q, p, max_norm=10.0):
+        '''钳位 q/p 的逐元素范数，防止哈密顿积分发散。'''
+        q = torch.clamp(q, -max_norm, max_norm)
+        p = torch.clamp(p, -max_norm, max_norm)
+        return q, p
 
     def _ys_step(self, q, p, hnn):
         '''四阶 Yoshida 辛积分器（由三个蛙跳复合而成）'''
@@ -115,9 +112,9 @@ class Integrator:
         p_3 = p_2 + d_3*a_3*self.delta_t
         q_4 = q_3 + c_4*p_3*self.delta_t
 
-        return q_4, p_3
+        return self._clamp_qp(q_4, p_3)
 
-def step(self, q, p, hnn, C=None):
+    def step(self, q, p, hnn, C=None):
         self.C = C
         if self.method == "Euler":
             return self._euler_step(q, p, hnn)
