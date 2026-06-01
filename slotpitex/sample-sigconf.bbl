@@ -1,0 +1,683 @@
+%%% -*-BibTeX-*-
+%%% Do NOT edit. File created by BibTeX with style
+%%% ACM-Reference-Format-Journals [18-Jan-2012].
+
+\begin{thebibliography}{81}
+
+%%% ====================================================================
+%%% NOTE TO THE USER: you can override these defaults by providing
+%%% customized versions of any of these macros before the \bibliography
+%%% command.  Each of them MUST provide its own final punctuation,
+%%% except for \shownote{}, \showDOI{}, and \showURL{}.  The latter two
+%%% do not use final punctuation, in order to avoid confusing it with
+%%% the Web address.
+%%%
+%%% To suppress output of a particular field, define its macro to expand
+%%% to an empty string, or better, \unskip, like this:
+%%%
+%%% \newcommand{\showDOI}[1]{\unskip}   % LaTeX syntax
+%%%
+%%% \def \showDOI #1{\unskip}           % plain TeX syntax
+%%%
+%%% ====================================================================
+
+\ifx \showCODEN    \undefined \def \showCODEN     #1{\unskip}     \fi
+\ifx \showDOI      \undefined \def \showDOI       #1{#1}\fi
+\ifx \showISBNx    \undefined \def \showISBNx     #1{\unskip}     \fi
+\ifx \showISBNxiii \undefined \def \showISBNxiii  #1{\unskip}     \fi
+\ifx \showISSN     \undefined \def \showISSN      #1{\unskip}     \fi
+\ifx \showLCCN     \undefined \def \showLCCN      #1{\unskip}     \fi
+\ifx \shownote     \undefined \def \shownote      #1{#1}          \fi
+\ifx \showarticletitle \undefined \def \showarticletitle #1{#1}   \fi
+\ifx \showURL      \undefined \def \showURL       {\relax}        \fi
+% The following commands are used for tagged output and should be
+% invisible to TeX
+\providecommand\bibfield[2]{#2}
+\providecommand\bibinfo[2]{#2}
+\providecommand\natexlab[1]{#1}
+\providecommand\showeprint[2][]{arXiv:#2}
+
+\bibitem[Baillargeon(1987)]%
+        {baillargeon1987object}
+\bibfield{author}{\bibinfo{person}{Renee Baillargeon}.} \bibinfo{year}{1987}\natexlab{}.
+\newblock \showarticletitle{Object permanence in 3$1/2$-and 4$1/2$-month-old infants.}
+\newblock \bibinfo{journal}{\emph{Developmental psychology}} \bibinfo{volume}{23}, \bibinfo{number}{5} (\bibinfo{year}{1987}), \bibinfo{pages}{655}.
+\newblock
+
+
+\bibitem[Bar-Sinai et~al\mbox{.}(2019)]%
+        {bar2019learning}
+\bibfield{author}{\bibinfo{person}{Yohai Bar-Sinai}, \bibinfo{person}{Stephan Hoyer}, \bibinfo{person}{Jason Hickey}, {and} \bibinfo{person}{Michael~P Brenner}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Learning data-driven discretizations for partial differential equations}.
+\newblock \bibinfo{journal}{\emph{Proceedings of the National Academy of Sciences}} \bibinfo{volume}{116}, \bibinfo{number}{31} (\bibinfo{year}{2019}), \bibinfo{pages}{15344--15349}.
+\newblock
+
+
+\bibitem[Battaglia et~al\mbox{.}(2016)]%
+        {battaglia2016interaction}
+\bibfield{author}{\bibinfo{person}{Peter Battaglia}, \bibinfo{person}{Razvan Pascanu}, \bibinfo{person}{Matthew Lai}, \bibinfo{person}{Danilo Jimenez~Rezende}, {et~al\mbox{.}}} \bibinfo{year}{2016}\natexlab{}.
+\newblock \showarticletitle{Interaction networks for learning about objects, relations and physics}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{29} (\bibinfo{year}{2016}).
+\newblock
+
+
+\bibitem[Bear et~al\mbox{.}(2020)]%
+        {bear2020learning}
+\bibfield{author}{\bibinfo{person}{Daniel Bear}, \bibinfo{person}{Chaofei Fan}, \bibinfo{person}{Damian Mrowca}, \bibinfo{person}{Yunzhu Li}, \bibinfo{person}{Seth Alter}, \bibinfo{person}{Aran Nayebi}, \bibinfo{person}{Jeremy Schwartz}, \bibinfo{person}{Li~F Fei-Fei}, \bibinfo{person}{Jiajun Wu}, \bibinfo{person}{Josh Tenenbaum}, {et~al\mbox{.}}} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Learning physical graph representations from visual scenes}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{33} (\bibinfo{year}{2020}), \bibinfo{pages}{6027--6039}.
+\newblock
+
+
+\bibitem[Bear et~al\mbox{.}(2021)]%
+        {bear2021physion}
+\bibfield{author}{\bibinfo{person}{Daniel~M Bear}, \bibinfo{person}{Elias Wang}, \bibinfo{person}{Damian Mrowca}, \bibinfo{person}{Felix~J Binder}, \bibinfo{person}{Hsiao-Yu~Fish Tung}, \bibinfo{person}{RT Pramod}, \bibinfo{person}{Cameron Holdaway}, \bibinfo{person}{Sirui Tao}, \bibinfo{person}{Kevin Smith}, \bibinfo{person}{Fan-Yun Sun}, {et~al\mbox{.}}} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Physion: Evaluating physical prediction from vision in humans and machines}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2106.08261}} (\bibinfo{year}{2021}).
+\newblock
+
+
+\bibitem[Brockman(2016)]%
+        {brockman2016openai}
+\bibfield{author}{\bibinfo{person}{G Brockman}.} \bibinfo{year}{2016}\natexlab{}.
+\newblock \showarticletitle{OpenAI Gym}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1606.01540}} (\bibinfo{year}{2016}).
+\newblock
+
+
+\bibitem[Burgess et~al\mbox{.}(2019)]%
+        {burgess2019monet}
+\bibfield{author}{\bibinfo{person}{Christopher~P Burgess}, \bibinfo{person}{Loic Matthey}, \bibinfo{person}{Nicholas Watters}, \bibinfo{person}{Rishabh Kabra}, \bibinfo{person}{Irina Higgins}, \bibinfo{person}{Matt Botvinick}, {and} \bibinfo{person}{Alexander Lerchner}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Monet: Unsupervised scene decomposition and representation}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1901.11390}} (\bibinfo{year}{2019}).
+\newblock
+
+
+\bibitem[Chang et~al\mbox{.}(2016)]%
+        {chang2016compositional}
+\bibfield{author}{\bibinfo{person}{Michael~B Chang}, \bibinfo{person}{Tomer Ullman}, \bibinfo{person}{Antonio Torralba}, {and} \bibinfo{person}{Joshua~B Tenenbaum}.} \bibinfo{year}{2016}\natexlab{}.
+\newblock \showarticletitle{A compositional object-based approach to learning physical dynamics}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1612.00341}} (\bibinfo{year}{2016}).
+\newblock
+
+
+\bibitem[Chen et~al\mbox{.}(2021a)]%
+        {chen2021roots}
+\bibfield{author}{\bibinfo{person}{Chang Chen}, \bibinfo{person}{Fei Deng}, {and} \bibinfo{person}{Sungjin Ahn}.} \bibinfo{year}{2021}\natexlab{a}.
+\newblock \showarticletitle{Roots: Object-centric representation and rendering of 3d scenes}.
+\newblock \bibinfo{journal}{\emph{The Journal of Machine Learning Research}} \bibinfo{volume}{22}, \bibinfo{number}{1} (\bibinfo{year}{2021}), \bibinfo{pages}{11770--11805}.
+\newblock
+
+
+\bibitem[Chen et~al\mbox{.}(2021b)]%
+        {chen2021neural}
+\bibfield{author}{\bibinfo{person}{Yuhan Chen}, \bibinfo{person}{Takashi Matsubara}, {and} \bibinfo{person}{Takaharu Yaguchi}.} \bibinfo{year}{2021}\natexlab{b}.
+\newblock \showarticletitle{Neural symplectic form: Learning Hamiltonian equations on general coordinate systems}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{16659--16670}.
+\newblock
+
+
+\bibitem[Chen et~al\mbox{.}(2022)]%
+        {chen2022learning}
+\bibfield{author}{\bibinfo{person}{Zhijie Chen}, \bibinfo{person}{Mingquan Feng}, \bibinfo{person}{Junchi Yan}, {and} \bibinfo{person}{Hongyuan Zha}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Learning neural Hamiltonian dynamics: a methodological overview}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2203.00128}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[Clark(2013)]%
+        {clark2013whatever}
+\bibfield{author}{\bibinfo{person}{Andy Clark}.} \bibinfo{year}{2013}\natexlab{}.
+\newblock \showarticletitle{Whatever next? Predictive brains, situated agents, and the future of cognitive science}.
+\newblock \bibinfo{journal}{\emph{Behavioral and brain sciences}} \bibinfo{volume}{36}, \bibinfo{number}{3} (\bibinfo{year}{2013}), \bibinfo{pages}{181--204}.
+\newblock
+
+
+\bibitem[Course et~al\mbox{.}(2020)]%
+        {course2020weak}
+\bibfield{author}{\bibinfo{person}{Kevin Course}, \bibinfo{person}{Trefor Evans}, {and} \bibinfo{person}{Prasanth Nair}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Weak form generalized hamiltonian learning}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{33} (\bibinfo{year}{2020}), \bibinfo{pages}{18716--18726}.
+\newblock
+
+
+\bibitem[Ding et~al\mbox{.}(2021b)]%
+        {ding2021attention}
+\bibfield{author}{\bibinfo{person}{David Ding}, \bibinfo{person}{Felix Hill}, \bibinfo{person}{Adam Santoro}, \bibinfo{person}{Malcolm Reynolds}, {and} \bibinfo{person}{Matt Botvinick}.} \bibinfo{year}{2021}\natexlab{b}.
+\newblock \showarticletitle{Attention over learned object embeddings enables complex visual reasoning}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{9112--9124}.
+\newblock
+
+
+\bibitem[Ding et~al\mbox{.}(2021a)]%
+        {ding2021dynamic}
+\bibfield{author}{\bibinfo{person}{Mingyu Ding}, \bibinfo{person}{Zhenfang Chen}, \bibinfo{person}{Tao Du}, \bibinfo{person}{Ping Luo}, \bibinfo{person}{Josh Tenenbaum}, {and} \bibinfo{person}{Chuang Gan}.} \bibinfo{year}{2021}\natexlab{a}.
+\newblock \showarticletitle{Dynamic visual reasoning by learning differentiable physics models from video and language}.
+\newblock \bibinfo{journal}{\emph{Advances In Neural Information Processing Systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{887--899}.
+\newblock
+
+
+\bibitem[Dittadi et~al\mbox{.}(2021)]%
+        {dittadi2021generalization}
+\bibfield{author}{\bibinfo{person}{Andrea Dittadi}, \bibinfo{person}{Samuele Papa}, \bibinfo{person}{Michele De~Vita}, \bibinfo{person}{Bernhard Sch{\"o}lkopf}, \bibinfo{person}{Ole Winther}, {and} \bibinfo{person}{Francesco Locatello}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Generalization and robustness implications in object-centric learning}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2107.00637}} (\bibinfo{year}{2021}).
+\newblock
+
+
+\bibitem[Driess et~al\mbox{.}(2023)]%
+        {driess2023learning}
+\bibfield{author}{\bibinfo{person}{Danny Driess}, \bibinfo{person}{Zhiao Huang}, \bibinfo{person}{Yunzhu Li}, \bibinfo{person}{Russ Tedrake}, {and} \bibinfo{person}{Marc Toussaint}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Learning multi-object dynamics with compositional neural radiance fields}. In \bibinfo{booktitle}{\emph{Conference on Robot Learning}}. PMLR, \bibinfo{pages}{1755--1768}.
+\newblock
+
+
+\bibitem[Elsayed et~al\mbox{.}(2022)]%
+        {elsayed2022savi++}
+\bibfield{author}{\bibinfo{person}{Gamaleldin Elsayed}, \bibinfo{person}{Aravindh Mahendran}, \bibinfo{person}{Sjoerd van Steenkiste}, \bibinfo{person}{Klaus Greff}, \bibinfo{person}{Michael~C Mozer}, {and} \bibinfo{person}{Thomas Kipf}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Savi++: Towards end-to-end object-centric learning from real-world videos}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{35} (\bibinfo{year}{2022}), \bibinfo{pages}{28940--28954}.
+\newblock
+
+
+\bibitem[Gao et~al\mbox{.}(2021)]%
+        {gao2021phygeonet}
+\bibfield{author}{\bibinfo{person}{Han Gao}, \bibinfo{person}{Luning Sun}, {and} \bibinfo{person}{Jian-Xun Wang}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{PhyGeoNet: Physics-informed geometry-adaptive convolutional neural networks for solving parameterized steady-state PDEs on irregular domain}.
+\newblock \bibinfo{journal}{\emph{J. Comput. Phys.}}  \bibinfo{volume}{428} (\bibinfo{year}{2021}), \bibinfo{pages}{110079}.
+\newblock
+
+
+\bibitem[Gopnik and Wellman(1992)]%
+        {gopnik1992child}
+\bibfield{author}{\bibinfo{person}{Alison Gopnik} {and} \bibinfo{person}{Henry~M Wellman}.} \bibinfo{year}{1992}\natexlab{}.
+\newblock \showarticletitle{Why the child's theory of mind really is a theory}.
+\newblock  (\bibinfo{year}{1992}).
+\newblock
+
+
+\bibitem[Greydanus et~al\mbox{.}(2019)]%
+        {greydanus2019hamiltonian}
+\bibfield{author}{\bibinfo{person}{Samuel Greydanus}, \bibinfo{person}{Misko Dzamba}, {and} \bibinfo{person}{Jason Yosinski}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Hamiltonian neural networks}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{32} (\bibinfo{year}{2019}).
+\newblock
+
+
+\bibitem[Gupta et~al\mbox{.}(2021)]%
+        {gupta2021multiwavelet}
+\bibfield{author}{\bibinfo{person}{Gaurav Gupta}, \bibinfo{person}{Xiongye Xiao}, {and} \bibinfo{person}{Paul Bogdan}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Multiwavelet-based operator learning for differential equations}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{24048--24062}.
+\newblock
+
+
+\bibitem[Gupta and Brandstetter(2022)]%
+        {gupta2022towards}
+\bibfield{author}{\bibinfo{person}{Jayesh~K Gupta} {and} \bibinfo{person}{Johannes Brandstetter}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Towards multi-spatiotemporal-scale generalized pde modeling}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2209.15616}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[Hassanin et~al\mbox{.}(2022)]%
+        {hassanin2022visual}
+\bibfield{author}{\bibinfo{person}{Mohammed Hassanin}, \bibinfo{person}{Saeed Anwar}, \bibinfo{person}{Ibrahim Radwan}, \bibinfo{person}{Fahad~S Khan}, {and} \bibinfo{person}{Ajmal Mian}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Visual attention methods in deep learning: An in-depth survey}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2204.07756}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[He et~al\mbox{.}(2016)]%
+        {he2016deep}
+\bibfield{author}{\bibinfo{person}{Kaiming He}, \bibinfo{person}{Xiangyu Zhang}, \bibinfo{person}{Shaoqing Ren}, {and} \bibinfo{person}{Jian Sun}.} \bibinfo{year}{2016}\natexlab{}.
+\newblock \showarticletitle{Deep residual learning for image recognition}. In \bibinfo{booktitle}{\emph{Proceedings of the IEEE conference on computer vision and pattern recognition}}. \bibinfo{pages}{770--778}.
+\newblock
+
+
+\bibitem[Hern{\'a}ndez et~al\mbox{.}(2023)]%
+        {hernandez2023thermodynamics}
+\bibfield{author}{\bibinfo{person}{Quercus Hern{\'a}ndez}, \bibinfo{person}{Alberto Bad{\'\i}as}, \bibinfo{person}{Francisco Chinesta}, {and} \bibinfo{person}{El{\'\i}as Cueto}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Thermodynamics-informed neural networks for physically realistic mixed reality}.
+\newblock \bibinfo{journal}{\emph{Computer Methods in Applied Mechanics and Engineering}}  \bibinfo{volume}{407} (\bibinfo{year}{2023}), \bibinfo{pages}{115912}.
+\newblock
+
+
+\bibitem[Howse et~al\mbox{.}(1995)]%
+        {howse1995gradient}
+\bibfield{author}{\bibinfo{person}{James Howse}, \bibinfo{person}{Chaouki Abdallah}, {and} \bibinfo{person}{Gregory Heileman}.} \bibinfo{year}{1995}\natexlab{}.
+\newblock \showarticletitle{Gradient and Hamiltonian dynamics applied to learning in neural networks}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{8} (\bibinfo{year}{1995}).
+\newblock
+
+
+\bibitem[Hubert and Arabie(1985)]%
+        {hubert1985comparing}
+\bibfield{author}{\bibinfo{person}{Lawrence Hubert} {and} \bibinfo{person}{Phipps Arabie}.} \bibinfo{year}{1985}\natexlab{}.
+\newblock \showarticletitle{Comparing partitions}.
+\newblock \bibinfo{journal}{\emph{Journal of classification}}  \bibinfo{volume}{2} (\bibinfo{year}{1985}), \bibinfo{pages}{193--218}.
+\newblock
+
+
+\bibitem[Janny et~al\mbox{.}(2023)]%
+        {janny2023eagle}
+\bibfield{author}{\bibinfo{person}{Steeven Janny}, \bibinfo{person}{Aur{\'e}lien Beneteau}, \bibinfo{person}{Madiha Nadri}, \bibinfo{person}{Julie Digne}, \bibinfo{person}{Nicolas Thome}, {and} \bibinfo{person}{Christian Wolf}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Eagle: Large-scale learning of turbulent fluid dynamics with mesh transformers}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2302.10803}} (\bibinfo{year}{2023}).
+\newblock
+
+
+\bibitem[Jiang et~al\mbox{.}(2019)]%
+        {jiang2019scalor}
+\bibfield{author}{\bibinfo{person}{Jindong Jiang}, \bibinfo{person}{Sepehr Janghorbani}, \bibinfo{person}{Gerard De~Melo}, {and} \bibinfo{person}{Sungjin Ahn}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Scalor: Generative world models with scalable object representations}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1910.02384}} (\bibinfo{year}{2019}).
+\newblock
+
+
+\bibitem[Jusup et~al\mbox{.}(2022)]%
+        {jusup2022social}
+\bibfield{author}{\bibinfo{person}{Marko Jusup}, \bibinfo{person}{Petter Holme}, \bibinfo{person}{Kiyoshi Kanazawa}, \bibinfo{person}{Misako Takayasu}, \bibinfo{person}{Ivan Romi{\'c}}, \bibinfo{person}{Zhen Wang}, \bibinfo{person}{Sun{\v{c}}ana Ge{\v{c}}ek}, \bibinfo{person}{Tomislav Lipi{\'c}}, \bibinfo{person}{Boris Podobnik}, \bibinfo{person}{Lin Wang}, {et~al\mbox{.}}} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Social physics}.
+\newblock \bibinfo{journal}{\emph{Physics Reports}}  \bibinfo{volume}{948} (\bibinfo{year}{2022}), \bibinfo{pages}{1--148}.
+\newblock
+
+
+\bibitem[Kabra et~al\mbox{.}(2021)]%
+        {kabra2021simone}
+\bibfield{author}{\bibinfo{person}{Rishabh Kabra}, \bibinfo{person}{Daniel Zoran}, \bibinfo{person}{Goker Erdogan}, \bibinfo{person}{Loic Matthey}, \bibinfo{person}{Antonia Creswell}, \bibinfo{person}{Matt Botvinick}, \bibinfo{person}{Alexander Lerchner}, {and} \bibinfo{person}{Chris Burgess}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Simone: View-invariant, temporally-abstracted object representations via unsupervised video decomposition}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{20146--20159}.
+\newblock
+
+
+\bibitem[Kipf et~al\mbox{.}(2021)]%
+        {kipf2021conditional}
+\bibfield{author}{\bibinfo{person}{Thomas Kipf}, \bibinfo{person}{Gamaleldin~Fathy Elsayed}, \bibinfo{person}{Aravindh Mahendran}, \bibinfo{person}{Austin Stone}, \bibinfo{person}{Sara Sabour}, \bibinfo{person}{Georg Heigold}, \bibinfo{person}{Rico Jonschkowski}, \bibinfo{person}{Alexey Dosovitskiy}, {and} \bibinfo{person}{Klaus Greff}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Conditional Object-Centric Learning from Video}. In \bibinfo{booktitle}{\emph{International Conference on Learning Representations}}.
+\newblock
+
+
+\bibitem[Kosiorek et~al\mbox{.}(2018)]%
+        {kosiorek2018sequential}
+\bibfield{author}{\bibinfo{person}{Adam Kosiorek}, \bibinfo{person}{Hyunjik Kim}, \bibinfo{person}{Yee~Whye Teh}, {and} \bibinfo{person}{Ingmar Posner}.} \bibinfo{year}{2018}\natexlab{}.
+\newblock \showarticletitle{Sequential attend, infer, repeat: Generative modelling of moving objects}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{31} (\bibinfo{year}{2018}).
+\newblock
+
+
+\bibitem[Kubricht et~al\mbox{.}(2017)]%
+        {kubricht2017intuitive}
+\bibfield{author}{\bibinfo{person}{James~R Kubricht}, \bibinfo{person}{Keith~J Holyoak}, {and} \bibinfo{person}{Hongjing Lu}.} \bibinfo{year}{2017}\natexlab{}.
+\newblock \showarticletitle{Intuitive physics: Current research and controversies}.
+\newblock \bibinfo{journal}{\emph{Trends in cognitive sciences}} \bibinfo{volume}{21}, \bibinfo{number}{10} (\bibinfo{year}{2017}), \bibinfo{pages}{749--759}.
+\newblock
+
+
+\bibitem[Kumar et~al\mbox{.}(2020)]%
+        {kumar2020ma}
+\bibfield{author}{\bibinfo{person}{Adarsh Kumar}, \bibinfo{person}{Peter Ku}, \bibinfo{person}{Anuj Goyal}, \bibinfo{person}{Angeliki Metallinou}, {and} \bibinfo{person}{Dilek Hakkani-Tur}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Ma-dst: Multi-attention-based scalable dialog state tracking}. In \bibinfo{booktitle}{\emph{Proceedings of the AAAI conference on artificial intelligence}}, Vol.~\bibinfo{volume}{34}. \bibinfo{pages}{8107--8114}.
+\newblock
+
+
+\bibitem[Lake et~al\mbox{.}(2017)]%
+        {lake2017building}
+\bibfield{author}{\bibinfo{person}{Brenden~M Lake}, \bibinfo{person}{Tomer~D Ullman}, \bibinfo{person}{Joshua~B Tenenbaum}, {and} \bibinfo{person}{Samuel~J Gershman}.} \bibinfo{year}{2017}\natexlab{}.
+\newblock \showarticletitle{Building machines that learn and think like people}.
+\newblock \bibinfo{journal}{\emph{Behavioral and brain sciences}}  \bibinfo{volume}{40} (\bibinfo{year}{2017}), \bibinfo{pages}{e253}.
+\newblock
+
+
+\bibitem[Lee et~al\mbox{.}(2021)]%
+        {lee2021machine}
+\bibfield{author}{\bibinfo{person}{Kookjin Lee}, \bibinfo{person}{Nathaniel Trask}, {and} \bibinfo{person}{Panos Stinis}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Machine learning structure preserving brackets for forecasting irreversible processes}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{34} (\bibinfo{year}{2021}), \bibinfo{pages}{5696--5707}.
+\newblock
+
+
+\bibitem[Li et~al\mbox{.}(2024a)]%
+        {li2024reasoningenhanced}
+\bibfield{author}{\bibinfo{person}{Jian Li}, \bibinfo{person}{Pu Ren}, \bibinfo{person}{Yang Liu}, {and} \bibinfo{person}{Hao Sun}.} \bibinfo{year}{2024}\natexlab{a}.
+\newblock \bibinfo{title}{Reasoning-Enhanced Object-Centric Learning for Videos}.
+\newblock
+\newblock
+\showeprint[arxiv]{2403.15245}~[cs.CV]
+\urldef\tempurl%
+\url{https://arxiv.org/abs/2403.15245}
+\showURL{%
+\tempurl}
+
+
+\bibitem[Li et~al\mbox{.}(2020)]%
+        {li2020fourier}
+\bibfield{author}{\bibinfo{person}{Zongyi Li}, \bibinfo{person}{Nikola Kovachki}, \bibinfo{person}{Kamyar Azizzadenesheli}, \bibinfo{person}{Burigede Liu}, \bibinfo{person}{Kaushik Bhattacharya}, \bibinfo{person}{Andrew Stuart}, {and} \bibinfo{person}{Anima Anandkumar}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Fourier neural operator for parametric partial differential equations}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2010.08895}} (\bibinfo{year}{2020}).
+\newblock
+
+
+\bibitem[Li et~al\mbox{.}(2024b)]%
+        {li2024scalable}
+\bibfield{author}{\bibinfo{person}{Zijie Li}, \bibinfo{person}{Dule Shu}, {and} \bibinfo{person}{Amir Barati~Farimani}.} \bibinfo{year}{2024}\natexlab{b}.
+\newblock \showarticletitle{Scalable transformer for pde surrogate modeling}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{36} (\bibinfo{year}{2024}).
+\newblock
+
+
+\bibitem[Lin et~al\mbox{.}(2020)]%
+        {lin2020improving}
+\bibfield{author}{\bibinfo{person}{Zhixuan Lin}, \bibinfo{person}{Yi-Fu Wu}, \bibinfo{person}{Skand Peri}, \bibinfo{person}{Bofeng Fu}, \bibinfo{person}{Jindong Jiang}, {and} \bibinfo{person}{Sungjin Ahn}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Improving generative imagination in object-centric world models}. In \bibinfo{booktitle}{\emph{International conference on machine learning}}. PMLR, \bibinfo{pages}{6140--6149}.
+\newblock
+
+
+\bibitem[Lippe et~al\mbox{.}(2023)]%
+        {lippe2023pde}
+\bibfield{author}{\bibinfo{person}{Phillip Lippe}, \bibinfo{person}{Bas Veeling}, \bibinfo{person}{Paris Perdikaris}, \bibinfo{person}{Richard Turner}, {and} \bibinfo{person}{Johannes Brandstetter}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Pde-refiner: Achieving accurate long rollouts with neural pde solvers}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{36} (\bibinfo{year}{2023}), \bibinfo{pages}{67398--67433}.
+\newblock
+
+
+\bibitem[Long et~al\mbox{.}(2019)]%
+        {long2019pde}
+\bibfield{author}{\bibinfo{person}{Zichao Long}, \bibinfo{person}{Yiping Lu}, {and} \bibinfo{person}{Bin Dong}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{PDE-Net 2.0: Learning PDEs from data with a numeric-symbolic hybrid deep network}.
+\newblock \bibinfo{journal}{\emph{J. Comput. Phys.}}  \bibinfo{volume}{399} (\bibinfo{year}{2019}), \bibinfo{pages}{108925}.
+\newblock
+
+
+\bibitem[Long et~al\mbox{.}(2018)]%
+        {long2018pde}
+\bibfield{author}{\bibinfo{person}{Zichao Long}, \bibinfo{person}{Yiping Lu}, \bibinfo{person}{Xianzhong Ma}, {and} \bibinfo{person}{Bin Dong}.} \bibinfo{year}{2018}\natexlab{}.
+\newblock \showarticletitle{Pde-net: Learning pdes from data}. In \bibinfo{booktitle}{\emph{International conference on machine learning}}. PMLR, \bibinfo{pages}{3208--3216}.
+\newblock
+
+
+\bibitem[Lu et~al\mbox{.}(2023)]%
+        {lu2023vdt}
+\bibfield{author}{\bibinfo{person}{Haoyu Lu}, \bibinfo{person}{Guoxing Yang}, \bibinfo{person}{Nanyi Fei}, \bibinfo{person}{Yuqi Huo}, \bibinfo{person}{Zhiwu Lu}, \bibinfo{person}{Ping Luo}, {and} \bibinfo{person}{Mingyu Ding}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Vdt: General-purpose video diffusion transformers via mask modeling}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2305.13311}} (\bibinfo{year}{2023}).
+\newblock
+
+
+\bibitem[Lu et~al\mbox{.}(2021)]%
+        {lu2021learning}
+\bibfield{author}{\bibinfo{person}{Lu Lu}, \bibinfo{person}{Pengzhan Jin}, \bibinfo{person}{Guofei Pang}, \bibinfo{person}{Zhongqiang Zhang}, {and} \bibinfo{person}{George~Em Karniadakis}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Learning nonlinear operators via DeepONet based on the universal approximation theorem of operators}.
+\newblock \bibinfo{journal}{\emph{Nature machine intelligence}} \bibinfo{volume}{3}, \bibinfo{number}{3} (\bibinfo{year}{2021}), \bibinfo{pages}{218--229}.
+\newblock
+
+
+\bibitem[Meng et~al\mbox{.}(2022)]%
+        {meng2022physics}
+\bibfield{author}{\bibinfo{person}{Chuizheng Meng}, \bibinfo{person}{Sungyong Seo}, \bibinfo{person}{Defu Cao}, \bibinfo{person}{Sam Griesemer}, {and} \bibinfo{person}{Yan Liu}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{When physics meets machine learning: A survey of physics-informed machine learning}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2203.16797}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[Pfaff et~al\mbox{.}(2020)]%
+        {pfaff2020learning}
+\bibfield{author}{\bibinfo{person}{Tobias Pfaff}, \bibinfo{person}{Meire Fortunato}, \bibinfo{person}{Alvaro Sanchez-Gonzalez}, {and} \bibinfo{person}{Peter~W Battaglia}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Learning mesh-based simulation with graph networks}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2010.03409}} (\bibinfo{year}{2020}).
+\newblock
+
+
+\bibitem[Piloto et~al\mbox{.}(2022)]%
+        {piloto2022intuitive}
+\bibfield{author}{\bibinfo{person}{Luis~S Piloto}, \bibinfo{person}{Ari Weinstein}, \bibinfo{person}{Peter Battaglia}, {and} \bibinfo{person}{Matthew Botvinick}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Intuitive physics learning in a deep-learning model inspired by developmental psychology}.
+\newblock \bibinfo{journal}{\emph{Nature human behaviour}} \bibinfo{volume}{6}, \bibinfo{number}{9} (\bibinfo{year}{2022}), \bibinfo{pages}{1257--1267}.
+\newblock
+
+
+\bibitem[Raissi et~al\mbox{.}(2019)]%
+        {raissi2019physics}
+\bibfield{author}{\bibinfo{person}{Maziar Raissi}, \bibinfo{person}{Paris Perdikaris}, {and} \bibinfo{person}{George~E Karniadakis}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Physics-informed neural networks: A deep learning framework for solving forward and inverse problems involving nonlinear partial differential equations}.
+\newblock \bibinfo{journal}{\emph{Journal of Computational physics}}  \bibinfo{volume}{378} (\bibinfo{year}{2019}), \bibinfo{pages}{686--707}.
+\newblock
+
+
+\bibitem[Raissi et~al\mbox{.}(2020)]%
+        {raissi2020hidden}
+\bibfield{author}{\bibinfo{person}{Maziar Raissi}, \bibinfo{person}{Alireza Yazdani}, {and} \bibinfo{person}{George~Em Karniadakis}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Hidden fluid mechanics: Learning velocity and pressure fields from flow visualizations}.
+\newblock \bibinfo{journal}{\emph{Science}} \bibinfo{volume}{367}, \bibinfo{number}{6481} (\bibinfo{year}{2020}), \bibinfo{pages}{1026--1030}.
+\newblock
+
+
+\bibitem[Rand(1971)]%
+        {rand1971objective}
+\bibfield{author}{\bibinfo{person}{William~M Rand}.} \bibinfo{year}{1971}\natexlab{}.
+\newblock \showarticletitle{Objective criteria for the evaluation of clustering methods}.
+\newblock \bibinfo{journal}{\emph{Journal of the American Statistical association}} \bibinfo{volume}{66}, \bibinfo{number}{336} (\bibinfo{year}{1971}), \bibinfo{pages}{846--850}.
+\newblock
+
+
+\bibitem[Rao et~al\mbox{.}(2022)]%
+        {rao2022discovering}
+\bibfield{author}{\bibinfo{person}{Chengping Rao}, \bibinfo{person}{Pu Ren}, \bibinfo{person}{Yang Liu}, {and} \bibinfo{person}{Hao Sun}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Discovering nonlinear PDEs from scarce data with physics-encoded learning}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2201.12354}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[Rao et~al\mbox{.}(2023)]%
+        {rao2023encoding}
+\bibfield{author}{\bibinfo{person}{Chengping Rao}, \bibinfo{person}{Pu Ren}, \bibinfo{person}{Qi Wang}, \bibinfo{person}{Oral Buyukozturk}, \bibinfo{person}{Hao Sun}, {and} \bibinfo{person}{Yang Liu}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Encoding physics to learn reaction--diffusion processes}.
+\newblock \bibinfo{journal}{\emph{Nature Machine Intelligence}} \bibinfo{volume}{5}, \bibinfo{number}{7} (\bibinfo{year}{2023}), \bibinfo{pages}{765--779}.
+\newblock
+
+
+\bibitem[Ren et~al\mbox{.}(2023)]%
+        {ren2023physr}
+\bibfield{author}{\bibinfo{person}{Pu Ren}, \bibinfo{person}{Chengping Rao}, \bibinfo{person}{Yang Liu}, \bibinfo{person}{Zihan Ma}, \bibinfo{person}{Qi Wang}, \bibinfo{person}{Jian-Xun Wang}, {and} \bibinfo{person}{Hao Sun}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{PhySR: Physics-informed deep super-resolution for spatiotemporal data}.
+\newblock \bibinfo{journal}{\emph{J. Comput. Phys.}}  \bibinfo{volume}{492} (\bibinfo{year}{2023}), \bibinfo{pages}{112438}.
+\newblock
+
+
+\bibitem[Ren et~al\mbox{.}(2022)]%
+        {ren2022phycrnet}
+\bibfield{author}{\bibinfo{person}{Pu Ren}, \bibinfo{person}{Chengping Rao}, \bibinfo{person}{Yang Liu}, \bibinfo{person}{Jian-Xun Wang}, {and} \bibinfo{person}{Hao Sun}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{PhyCRNet: Physics-informed convolutional-recurrent network for solving spatiotemporal PDEs}.
+\newblock \bibinfo{journal}{\emph{Computer Methods in Applied Mechanics and Engineering}}  \bibinfo{volume}{389} (\bibinfo{year}{2022}), \bibinfo{pages}{114399}.
+\newblock
+
+
+\bibitem[Riochet et~al\mbox{.}(2018)]%
+        {riochet2018intphys}
+\bibfield{author}{\bibinfo{person}{Ronan Riochet}, \bibinfo{person}{Mario~Ynocente Castro}, \bibinfo{person}{Mathieu Bernard}, \bibinfo{person}{Adam Lerer}, \bibinfo{person}{Rob Fergus}, \bibinfo{person}{V{\'e}ronique Izard}, {and} \bibinfo{person}{Emmanuel Dupoux}.} \bibinfo{year}{2018}\natexlab{}.
+\newblock \showarticletitle{Intphys: A framework and benchmark for visual intuitive physics reasoning}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1803.07616}} (\bibinfo{year}{2018}).
+\newblock
+
+
+\bibitem[Ronneberger et~al\mbox{.}(2015)]%
+        {ronneberger2015u}
+\bibfield{author}{\bibinfo{person}{Olaf Ronneberger}, \bibinfo{person}{Philipp Fischer}, {and} \bibinfo{person}{Thomas Brox}.} \bibinfo{year}{2015}\natexlab{}.
+\newblock \showarticletitle{U-net: Convolutional networks for biomedical image segmentation}. In \bibinfo{booktitle}{\emph{Medical image computing and computer-assisted intervention--MICCAI 2015: 18th international conference, Munich, Germany, October 5-9, 2015, proceedings, part III 18}}. Springer, \bibinfo{pages}{234--241}.
+\newblock
+
+
+\bibitem[Sanchez-Gonzalez et~al\mbox{.}(2020)]%
+        {sanchez2020learning}
+\bibfield{author}{\bibinfo{person}{Alvaro Sanchez-Gonzalez}, \bibinfo{person}{Jonathan Godwin}, \bibinfo{person}{Tobias Pfaff}, \bibinfo{person}{Rex Ying}, \bibinfo{person}{Jure Leskovec}, {and} \bibinfo{person}{Peter Battaglia}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Learning to simulate complex physics with graph networks}. In \bibinfo{booktitle}{\emph{International conference on machine learning}}. PMLR, \bibinfo{pages}{8459--8468}.
+\newblock
+
+
+\bibitem[Seung et~al\mbox{.}(1997)]%
+        {seung1997minimax}
+\bibfield{author}{\bibinfo{person}{H~Sebastian Seung}, \bibinfo{person}{Tom Richardson}, \bibinfo{person}{J Lagarias}, {and} \bibinfo{person}{John~J Hopfield}.} \bibinfo{year}{1997}\natexlab{}.
+\newblock \showarticletitle{Minimax and Hamiltonian dynamics of excitatory-inhibitory networks}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{10} (\bibinfo{year}{1997}).
+\newblock
+
+
+\bibitem[Shiffrin and Schneider(1977)]%
+        {shiffrin1977controlled}
+\bibfield{author}{\bibinfo{person}{Richard~M Shiffrin} {and} \bibinfo{person}{Walter Schneider}.} \bibinfo{year}{1977}\natexlab{}.
+\newblock \showarticletitle{Controlled and automatic human information processing: II. Perceptual learning, automatic attending and a general theory.}
+\newblock \bibinfo{journal}{\emph{Psychological review}} \bibinfo{volume}{84}, \bibinfo{number}{2} (\bibinfo{year}{1977}), \bibinfo{pages}{127}.
+\newblock
+
+
+\bibitem[Singh et~al\mbox{.}(2022)]%
+        {singh2022simple}
+\bibfield{author}{\bibinfo{person}{Gautam Singh}, \bibinfo{person}{Yi-Fu Wu}, {and} \bibinfo{person}{Sungjin Ahn}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Simple unsupervised object-centric learning for complex and naturalistic videos}.
+\newblock \bibinfo{journal}{\emph{Advances in Neural Information Processing Systems}}  \bibinfo{volume}{35} (\bibinfo{year}{2022}), \bibinfo{pages}{18181--18196}.
+\newblock
+
+
+\bibitem[Smith(2019)]%
+        {smith2019promise}
+\bibfield{author}{\bibinfo{person}{Brian~Cantwell Smith}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \bibinfo{booktitle}{\emph{The promise of artificial intelligence: reckoning and judgment}}.
+\newblock \bibinfo{publisher}{Mit Press}.
+\newblock
+
+
+\bibitem[Sosanya and Greydanus(2022)]%
+        {sosanya2022dissipative}
+\bibfield{author}{\bibinfo{person}{Andrew Sosanya} {and} \bibinfo{person}{Sam Greydanus}.} \bibinfo{year}{2022}\natexlab{}.
+\newblock \showarticletitle{Dissipative hamiltonian neural networks: Learning dissipative and conservative dynamics separately}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2201.10085}} (\bibinfo{year}{2022}).
+\newblock
+
+
+\bibitem[Spelke and Kinzler(2007)]%
+        {spelke2007core}
+\bibfield{author}{\bibinfo{person}{Elizabeth~S Spelke} {and} \bibinfo{person}{Katherine~D Kinzler}.} \bibinfo{year}{2007}\natexlab{}.
+\newblock \showarticletitle{Core knowledge}.
+\newblock \bibinfo{journal}{\emph{Developmental science}} \bibinfo{volume}{10}, \bibinfo{number}{1} (\bibinfo{year}{2007}), \bibinfo{pages}{89--96}.
+\newblock
+
+
+\bibitem[Stachenfeld et~al\mbox{.}(2021)]%
+        {stachenfeld2021learned}
+\bibfield{author}{\bibinfo{person}{Kimberly Stachenfeld}, \bibinfo{person}{Drummond~B Fielding}, \bibinfo{person}{Dmitrii Kochkov}, \bibinfo{person}{Miles Cranmer}, \bibinfo{person}{Tobias Pfaff}, \bibinfo{person}{Jonathan Godwin}, \bibinfo{person}{Can Cui}, \bibinfo{person}{Shirley Ho}, \bibinfo{person}{Peter Battaglia}, {and} \bibinfo{person}{Alvaro Sanchez-Gonzalez}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Learned coarse models for efficient turbulence simulation}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2112.15275}} (\bibinfo{year}{2021}).
+\newblock
+
+
+\bibitem[Stani{\'c} and Schmidhuber(2019)]%
+        {stanic2019r}
+\bibfield{author}{\bibinfo{person}{Aleksandar Stani{\'c}} {and} \bibinfo{person}{J{\"u}rgen Schmidhuber}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{R-sqair: Relational sequential attend, infer, repeat}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1910.05231}} (\bibinfo{year}{2019}).
+\newblock
+
+
+\bibitem[Tang et~al\mbox{.}(2023)]%
+        {tang2023adversarial}
+\bibfield{author}{\bibinfo{person}{Kejun Tang}, \bibinfo{person}{Jiayu Zhai}, \bibinfo{person}{Xiaoliang Wan}, {and} \bibinfo{person}{Chao Yang}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{Adversarial adaptive sampling: Unify PINN and optimal transport for the approximation of PDEs}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2305.18702}} (\bibinfo{year}{2023}).
+\newblock
+
+
+\bibitem[Veerapaneni et~al\mbox{.}(2020)]%
+        {veerapaneni2020entity}
+\bibfield{author}{\bibinfo{person}{Rishi Veerapaneni}, \bibinfo{person}{John~D Co-Reyes}, \bibinfo{person}{Michael Chang}, \bibinfo{person}{Michael Janner}, \bibinfo{person}{Chelsea Finn}, \bibinfo{person}{Jiajun Wu}, \bibinfo{person}{Joshua Tenenbaum}, {and} \bibinfo{person}{Sergey Levine}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Entity abstraction in visual model-based reinforcement learning}. In \bibinfo{booktitle}{\emph{Conference on Robot Learning}}. PMLR, \bibinfo{pages}{1439--1456}.
+\newblock
+
+
+\bibitem[Wang et~al\mbox{.}(2020a)]%
+        {wang2020towards}
+\bibfield{author}{\bibinfo{person}{Rui Wang}, \bibinfo{person}{Karthik Kashinath}, \bibinfo{person}{Mustafa Mustafa}, \bibinfo{person}{Adrian Albert}, {and} \bibinfo{person}{Rose Yu}.} \bibinfo{year}{2020}\natexlab{a}.
+\newblock \showarticletitle{Towards physics-informed deep learning for turbulent flow prediction}. In \bibinfo{booktitle}{\emph{Proceedings of the 26th ACM SIGKDD international conference on knowledge discovery \& data mining}}. \bibinfo{pages}{1457--1466}.
+\newblock
+
+
+\bibitem[Wang et~al\mbox{.}(2020b)]%
+        {wang2020incorporating}
+\bibfield{author}{\bibinfo{person}{Rui Wang}, \bibinfo{person}{Robin Walters}, {and} \bibinfo{person}{Rose Yu}.} \bibinfo{year}{2020}\natexlab{b}.
+\newblock \showarticletitle{Incorporating symmetry into deep dynamics models for improved generalization}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2002.03061}} (\bibinfo{year}{2020}).
+\newblock
+
+
+\bibitem[Wang et~al\mbox{.}(2004)]%
+        {wang2004image}
+\bibfield{author}{\bibinfo{person}{Zhou Wang}, \bibinfo{person}{Alan~C Bovik}, \bibinfo{person}{Hamid~R Sheikh}, {and} \bibinfo{person}{Eero~P Simoncelli}.} \bibinfo{year}{2004}\natexlab{}.
+\newblock \showarticletitle{Image quality assessment: from error visibility to structural similarity}.
+\newblock \bibinfo{journal}{\emph{IEEE transactions on image processing}} \bibinfo{volume}{13}, \bibinfo{number}{4} (\bibinfo{year}{2004}), \bibinfo{pages}{600--612}.
+\newblock
+
+
+\bibitem[Watters et~al\mbox{.}(2017)]%
+        {watters2017visual}
+\bibfield{author}{\bibinfo{person}{Nicholas Watters}, \bibinfo{person}{Daniel Zoran}, \bibinfo{person}{Theophane Weber}, \bibinfo{person}{Peter Battaglia}, \bibinfo{person}{Razvan Pascanu}, {and} \bibinfo{person}{Andrea Tacchetti}.} \bibinfo{year}{2017}\natexlab{}.
+\newblock \showarticletitle{Visual interaction networks: Learning a physics simulator from video}.
+\newblock \bibinfo{journal}{\emph{Advances in neural information processing systems}}  \bibinfo{volume}{30} (\bibinfo{year}{2017}).
+\newblock
+
+
+\bibitem[Weis et~al\mbox{.}(2020)]%
+        {weis2020unmasking}
+\bibfield{author}{\bibinfo{person}{Marissa~A Weis}, \bibinfo{person}{Kashyap Chitta}, \bibinfo{person}{Yash Sharma}, \bibinfo{person}{Wieland Brendel}, \bibinfo{person}{Matthias Bethge}, \bibinfo{person}{Andreas Geiger}, {and} \bibinfo{person}{Alexander~S Ecker}.} \bibinfo{year}{2020}\natexlab{}.
+\newblock \showarticletitle{Unmasking the inductive biases of unsupervised object representations for video sequences}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2006.07034}}  \bibinfo{volume}{2} (\bibinfo{year}{2020}).
+\newblock
+
+
+\bibitem[Wu et~al\mbox{.}(2024)]%
+        {wu2024transolver}
+\bibfield{author}{\bibinfo{person}{Haixu Wu}, \bibinfo{person}{Huakun Luo}, \bibinfo{person}{Haowen Wang}, \bibinfo{person}{Jianmin Wang}, {and} \bibinfo{person}{Mingsheng Long}.} \bibinfo{year}{2024}\natexlab{}.
+\newblock \showarticletitle{Transolver: A fast transformer solver for pdes on general geometries}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:2402.02366}} (\bibinfo{year}{2024}).
+\newblock
+
+
+\bibitem[Wu et~al\mbox{.}(2023)]%
+        {wu2023SlotFormer}
+\bibfield{author}{\bibinfo{person}{Ziyi Wu}, \bibinfo{person}{Nikita Dvornik}, \bibinfo{person}{Klaus Greff}, \bibinfo{person}{Thomas Kipf}, {and} \bibinfo{person}{Animesh Garg}.} \bibinfo{year}{2023}\natexlab{}.
+\newblock \showarticletitle{SlotFormer: Unsupervised Visual Dynamics Simulation with Object-Centric Models}. In \bibinfo{booktitle}{\emph{The Eleventh International Conference on Learning Representations}}.
+\newblock
+\urldef\tempurl%
+\url{https://openreview.net/forum?id=TFbwV6I0VLg}
+\showURL{%
+\tempurl}
+
+
+\bibitem[Yang et~al\mbox{.}(2021)]%
+        {yang2021self}
+\bibfield{author}{\bibinfo{person}{Charig Yang}, \bibinfo{person}{Hala Lamdouar}, \bibinfo{person}{Erika Lu}, \bibinfo{person}{Andrew Zisserman}, {and} \bibinfo{person}{Weidi Xie}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Self-supervised video object segmentation by motion grouping}. In \bibinfo{booktitle}{\emph{Proceedings of the IEEE/CVF International Conference on Computer Vision}}. \bibinfo{pages}{7177--7188}.
+\newblock
+
+
+\bibitem[Yi et~al\mbox{.}(2019)]%
+        {yi2019clevrer}
+\bibfield{author}{\bibinfo{person}{Kexin Yi}, \bibinfo{person}{Chuang Gan}, \bibinfo{person}{Yunzhu Li}, \bibinfo{person}{Pushmeet Kohli}, \bibinfo{person}{Jiajun Wu}, \bibinfo{person}{Antonio Torralba}, {and} \bibinfo{person}{Joshua~B Tenenbaum}.} \bibinfo{year}{2019}\natexlab{}.
+\newblock \showarticletitle{Clevrer: Collision events for video representation and reasoning}.
+\newblock \bibinfo{journal}{\emph{arXiv preprint arXiv:1910.01442}} (\bibinfo{year}{2019}).
+\newblock
+
+
+\bibitem[Zhang et~al\mbox{.}(2018)]%
+        {zhang2018unreasonable}
+\bibfield{author}{\bibinfo{person}{Richard Zhang}, \bibinfo{person}{Phillip Isola}, \bibinfo{person}{Alexei~A Efros}, \bibinfo{person}{Eli Shechtman}, {and} \bibinfo{person}{Oliver Wang}.} \bibinfo{year}{2018}\natexlab{}.
+\newblock \showarticletitle{The unreasonable effectiveness of deep features as a perceptual metric}. In \bibinfo{booktitle}{\emph{Proceedings of the IEEE conference on computer vision and pattern recognition}}. \bibinfo{pages}{586--595}.
+\newblock
+
+
+\bibitem[Zoran et~al\mbox{.}(2021)]%
+        {zoran2021parts}
+\bibfield{author}{\bibinfo{person}{Daniel Zoran}, \bibinfo{person}{Rishabh Kabra}, \bibinfo{person}{Alexander Lerchner}, {and} \bibinfo{person}{Danilo~J Rezende}.} \bibinfo{year}{2021}\natexlab{}.
+\newblock \showarticletitle{Parts: Unsupervised segmentation with slots, attention and independence maximization}. In \bibinfo{booktitle}{\emph{Proceedings of the IEEE/CVF International Conference on Computer Vision}}. \bibinfo{pages}{10439--10447}.
+\newblock
+
+
+\end{thebibliography}

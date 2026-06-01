@@ -1,0 +1,531 @@
+# attention.py — 注意力机制模块
+# 包含通用点积注意力、TransformerBlock、SlotAttention、TimeSpaceTransformerBlock2等
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from typing import Optional, Tuple
+from einops import rearrange
+
+
+class GeneralizedDotProductAttention(nn.Module):
+    '''
+    广义点积注意力机制。
+    支持任意批次维度、多头注意力和可选的注意力偏置。
+    '''
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, query, key, value, bias=None):
+        """
+        Args:
+            query: (B, *Q, H, D) 查询张量
+            key: (B, *K, H, D) 键张量
+            value: (B, *K, H, D) 值张量
+            bias: 可选的注意力偏置
+        Returns:
+            (B, *Q, H, D) 注意力加权后的值张量 和 注意力权重
+        """
+        assert query.shape[-1] == key.shape[-1]
+        # 计算注意力分数: ...qkh
+        attn = torch.einsum("...qh d,...kh d->...qkh", query, key)
+        if bias is not None:
+            attn = attn + bias
+        attn = F.softmax(attn, dim=-1)
+        return torch.einsum("...qkh,...kh d->...qh d", attn, value), attn
+
+
+class TransformerBlock(nn.Module):
+    '''
+    标准 Transformer 块，包含多头自注意力和 MLP 前馈网络。
+    支持预归一化和后归一化两种模式，可选 dropout。
+    '''
+    def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False, weight_init=None, dropout_rate=0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.qkv_size = qkv_size
+        self.mlp_size = mlp_size
+        self.pre_norm = pre_norm
+        self.dropout_rate = dropout_rate
+
+        assert num_heads >= 1
+        assert qkv_size % num_heads == 0, "embed dim must be divisible by num_heads"
+        self.head_dim = qkv_size // num_heads
+
+        # 多头自注意力
+        self.attn = GeneralizedDotProductAttention()
+        self.dense_q = nn.Linear(embed_dim, qkv_size)
+        self.dense_k = nn.Linear(embed_dim, qkv_size)
+        self.dense_v = nn.Linear(embed_dim, qkv_size)
+        self.dense_o = nn.Linear(qkv_size, embed_dim)
+
+        # MLP 前馈网络
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_size),
+            nn.ReLU(),
+            nn.Linear(mlp_size, embed_dim),
+        )
+
+        self.layernorm1 = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm2 = nn.LayerNorm(embed_dim, eps=1e-6)
+
+        if self.dropout_rate > 0:
+            self.att_drop = nn.Dropout(self.dropout_rate)
+            self.ff_drop = nn.Dropout(self.dropout_rate)
+
+    def forward(self, x, padding_mask=None):
+        B, N, D = x.shape
+
+        if self.pre_norm:
+            # 预归一化路径：先 LayerNorm 再做 Attention/MLP
+            x_norm = self.layernorm1(x)
+            q = self.dense_q(x_norm).view(B, N, self.num_heads, self.head_dim)
+            k = self.dense_k(x_norm).view(B, N, self.num_heads, self.head_dim)
+            v = self.dense_v(x_norm).view(B, N, self.num_heads, self.head_dim)
+            attn_out, _ = self.attn(query=q, key=k, value=v)
+            attn_out = self.dense_o(attn_out.reshape(B, N, self.qkv_size))
+            attn_out = x + self.att_drop(attn_out) if self.dropout_rate > 0 else x + attn_out
+            y = attn_out
+            y_norm = self.layernorm2(y)
+            z = self.mlp(y_norm)
+            z = y + self.ff_drop(z) if self.dropout_rate > 0 else y + z
+        else:
+            # 后归一化路径：先 Attention/MLP 再做 LayerNorm
+            q = self.dense_q(x).view(B, N, self.num_heads, self.head_dim)
+            k = self.dense_k(x).view(B, N, self.num_heads, self.head_dim)
+            v = self.dense_v(x).view(B, N, self.num_heads, self.head_dim)
+            attn_out, _ = self.attn(query=q, key=k, value=v)
+            attn_out = self.dense_o(attn_out.reshape(B, N, self.qkv_size))
+            attn_out = x + self.att_drop(attn_out) if self.dropout_rate > 0 else x + attn_out
+            attn_out = self.layernorm1(attn_out)
+            y = attn_out
+            z = self.mlp(y)
+            z = y + self.ff_drop(z) if self.dropout_rate > 0 else y + z
+            z = self.layernorm2(z)
+        return z
+
+
+class SlotAttention(nn.Module):
+    '''
+    Slot Attention 模块，用于从输入特征中迭代提取 Slot 表示。
+    支持多头注意力和 GRU 循环更新，可选 MLP 前馈网络。
+    '''
+    def __init__(self, num_slots, slot_dim, hidden_dim, iters=3, num_heads=1, qkv_size=None, mlp_size=None, epsilon=1e-8):
+        super().__init__()
+        self.num_slots = num_slots          # Slot 数量
+        self.slot_dim = slot_dim             # Slot 特征维度
+        self.hidden_dim = hidden_dim         # GRU 隐藏层维度
+        self.iters = iters                   # 迭代次数
+        self.num_heads = num_heads           # 注意力头数
+        self.qkv_size = qkv_size or slot_dim # QKV 投影维度
+        self.mlp_size = mlp_size             # MLP 隐藏层大小（可选）
+        self.epsilon = epsilon               # 防止除零的小常数
+
+        head_dim = self.qkv_size // self.num_heads
+
+        # Slot 的初始参数（可学习）
+        self.slot_mu = nn.Parameter(torch.randn(1, 1, slot_dim))
+        self.slot_sigma = nn.Parameter(torch.randn(1, 1, slot_dim))
+
+        # QKV 投影层
+        self.dense_q = nn.Linear(slot_dim, num_heads * head_dim, bias=False)
+        self.dense_k = nn.Linear(slot_dim, num_heads * head_dim, bias=False)
+        self.dense_v = nn.Linear(slot_dim, num_heads * head_dim, bias=False)
+
+        # GRU 循环更新
+        self.gru = nn.GRUCell(input_size=slot_dim, hidden_size=slot_dim)
+
+        # 可选 MLP
+        if self.mlp_size is not None:
+            self.mlp = nn.Sequential(
+                nn.Linear(slot_dim, self.mlp_size),
+                nn.ReLU(),
+                nn.Linear(self.mlp_size, slot_dim),
+            )
+
+    def forward(self, inputs, slots=None):
+        '''
+        Args:
+            inputs: 输入特征 (B, N, D)
+            slots: 上一时间步的 Slot（可选），若为 None 则使用随机初始化的 Slot
+        Returns:
+            slots: 更新后的 Slot (B, num_slots, slot_dim)
+            attn: 注意力权重 (B, num_slots, N)
+        '''
+        B, N, D = inputs.shape
+        device = inputs.device
+
+        # 初始化 Slot（若首次调用，使用可学习参数初始化；否则使用上一帧的 Slot）
+        if slots is None:
+            slots = self.slot_mu + torch.exp(self.slot_sigma) * torch.randn(B, self.num_slots, self.slot_dim, device=device)
+        else:
+            slots = slots.view(B, self.num_slots, self.slot_dim)
+
+        # 对输入做 LayerNorm
+        inputs_norm = F.layer_norm(inputs, (D,))
+        # 投影 key 和 value
+        k = self.dense_k(inputs_norm).view(B, N, self.num_heads, self.qkv_size // self.num_heads)
+        v = self.dense_v(inputs_norm).view(B, N, self.num_heads, self.qkv_size // self.num_heads)
+
+        # 多次迭代更新 Slot
+        for _ in range(self.iters):
+            slots_prev = slots
+            # Slot 上的 LayerNorm
+            slots_norm = F.layer_norm(slots, (self.slot_dim,))
+            # 投影 query
+            q = self.dense_q(slots_norm).view(B, self.num_slots, self.num_heads, self.qkv_size // self.num_heads)
+
+            # 计算注意力（反转注意力：Slot 作为 query，特征作为 key-value）
+            attn = torch.einsum("...qhd,...khd->...hqk", q, k)
+            attn = attn / (self.qkv_size // self.num_heads) ** 0.5
+            attn = F.softmax(attn, dim=-2)  # 在 Slot 维度上做 softmax（归一化 query 轴）
+            attn = attn + self.epsilon
+            # 归一化 key 轴（加权平均而非加权和）
+            attn = attn / attn.sum(dim=-1, keepdim=True)
+
+            # 计算更新量
+            updates = torch.einsum("...hqk,...khd->...qhd", attn, v)
+            updates = updates.reshape(B, self.num_slots, -1)
+
+            # GRU 更新
+            slots = self.gru(updates.reshape(-1, self.slot_dim), slots_prev.reshape(-1, self.slot_dim))
+            slots = slots.reshape(B, self.num_slots, self.slot_dim) + slots_prev
+
+        # 可选 MLP
+        if self.mlp_size is not None:
+            slots = self.mlp(slots) + slots
+
+        return slots, attn
+
+
+class TimeSpaceTransformerBlock2(nn.Module):
+    '''
+    时空 Transformer 块（论文中的 SOTA 方案）。
+    同时进行空间注意力和时间注意力，然后将两者结果相加。
+    输入 queries 为 (B, O, D)，inputs 为 (B, T, O, D) 的历史缓存。
+    '''
+    def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.qkv_size = qkv_size
+        self.mlp_size = mlp_size
+        self.pre_norm = pre_norm
+
+        assert num_heads >= 1
+        assert qkv_size % num_heads == 0, "qkv_size 必须能被 num_heads 整除"
+        self.head_dim = qkv_size // num_heads
+
+        # 通用注意力层
+        self.attn = GeneralizedDotProductAttention()
+
+        # QKV 投影层
+        self.dense_q = nn.Linear(embed_dim, qkv_size)
+        self.dense_k = nn.Linear(embed_dim, qkv_size)
+        self.dense_v = nn.Linear(embed_dim, qkv_size)
+
+        # 输出投影
+        self.dense_o = nn.Linear(qkv_size, embed_dim)
+
+        # MLP 前馈网络
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_size),
+            nn.ReLU(),
+            nn.Linear(mlp_size, embed_dim),
+        )
+
+        self.layernorm_query = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm_input = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm_mlp = nn.LayerNorm(embed_dim, eps=1e-6)
+
+    def forward(self, queries, inputs, padding_mask=None, train=False):
+        '''
+        Args:
+            queries: 当前帧的 Slot (B, O, D)
+            inputs: 历史缓存 (B, T, O, D)
+            padding_mask: 可选的 padding 掩码（未使用）
+            train: 是否训练模式（未使用）
+        Returns:
+            更新后的 Slot (B, O, D)
+        '''
+        del padding_mask, train
+        assert queries.ndim == 3
+        assert inputs.ndim == 4
+        B, O, D = queries.shape
+        head_dim = self.qkv_size // self.num_heads
+
+        if self.pre_norm:
+            # 空间注意力
+            xs = self.layernorm_query(queries)
+            qs = self.dense_q(xs).view(B, O, self.num_heads, head_dim)
+            ks = self.dense_k(xs).view(B, O, self.num_heads, head_dim)
+            vs = self.dense_v(xs).view(B, O, self.num_heads, head_dim)
+            xs_out, _ = self.attn(query=qs, key=ks, value=vs)
+            xs_out = self.dense_o(xs_out.reshape(B, O, self.qkv_size)).view(B, O, D)
+            xs_out = xs_out + queries
+
+            # 时间注意力（跨帧）
+            xt = self.layernorm_query(queries)
+            xt = torch.unsqueeze(xt, dim=1)                    # B, 1, O, D
+            xt = rearrange(xt, 'b t o d -> (b o) t d')         # B*O, 1, D
+            xt_buffer = self.layernorm_input(inputs)            # B, T, O, D
+            xt_buffer = rearrange(xt_buffer, 'b t o d -> (b o) t d')  # B*O, T, D
+            qt = self.dense_q(xt).view(xt.shape[0], xt.shape[1], self.num_heads, head_dim)
+            kt = self.dense_k(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, head_dim)
+            vt = self.dense_v(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, head_dim)
+            xt_out, _ = self.attn(query=qt, key=kt, value=vt)  # B*O, 1, h, d
+            xt_out = xt_out.reshape(B, O, D) + queries
+
+            # 合并空间和时间注意力结果
+            y = xt_out + xs_out
+            z = self.layernorm_mlp(y)
+            z = self.mlp(z)
+            z = z + y
+        else:
+            # 空间注意力
+            xs = queries
+            qs = self.dense_q(xs).view(B, O, self.num_heads, head_dim)
+            ks = self.dense_k(xs).view(B, O, self.num_heads, head_dim)
+            vs = self.dense_v(xs).view(B, O, self.num_heads, head_dim)
+            xs_out, _ = self.attn(query=qs, key=ks, value=vs)
+            xs_out = self.dense_o(xs_out.reshape(B, O, self.qkv_size)).view(B, O, D)
+            xs_out = xs_out + queries
+            xs_out = self.layernorm_query(xs_out)
+
+            # 时间注意力
+            xt = torch.unsqueeze(queries, dim=1)               # B, 1, O, D
+            xt = rearrange(xt, 'b t o d -> (b o) t d')         # B*O, 1, D
+            xt_buffer = rearrange(inputs, 'b t o d -> (b o) t d')  # B*O, T, D
+            qt = self.dense_q(xt).view(xt.shape[0], xt.shape[1], self.num_heads, head_dim)
+            kt = self.dense_k(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, head_dim)
+            vt = self.dense_v(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, head_dim)
+            xt_out, _ = self.attn(query=qt, key=kt, value=vt)  # B*O, 1, h, d
+            xt_out = xt_out.reshape(B, O, D) + queries
+            xt_out = self.layernorm_input(xt_out)
+
+            # 合并空间和时间注意力结果
+            y = xt_out + xs_out
+            z = self.mlp(y)
+            z = z + y
+            z = self.layernorm_mlp(z)
+
+        return z
+
+
+class SlotAttention(nn.Module):
+    '''
+    Slot Attention 模块，用于从输入特征中提取一组 Slot（物体表示）。
+    通过迭代的交叉注意力机制，将输入特征绑定到可学习的 Slot 上。
+    '''
+    def __init__(self, num_slots, slot_dim, hidden_dim, iters=3, epsilon=1e-8):
+        super().__init__()
+        self.num_slots = num_slots            # Slot 数量
+        self.slot_dim = slot_dim              # Slot 特征维度
+        self.hidden_dim = hidden_dim          # GRU 隐藏层维度
+        self.iters = iters                    # 迭代次数
+        self.epsilon = epsilon                # 数值稳定常数
+
+        # 初始化 Slot 参数（可学习的嵌入向量）
+        self.slots_init = nn.Parameter(torch.randn(1, num_slots, slot_dim))
+
+        # QKV 投影和注意力机制
+        self.dense_q = nn.Linear(slot_dim, slot_dim, bias=False)
+        self.dense_k = nn.Linear(slot_dim, slot_dim, bias=False)
+        self.dense_v = nn.Linear(slot_dim, slot_dim, bias=False)
+
+        # Slot 更新的 GRU
+        self.gru = nn.GRUCell(slot_dim, hidden_dim)
+        # 将 GRU 隐藏状态投影回 slot_dim
+        self.gru_proj = nn.Linear(hidden_dim, slot_dim)
+
+        # LayerNorm（预归一化用）
+        self.layernorm = nn.LayerNorm(slot_dim, eps=1e-6)
+
+    def forward(self, inputs, prev_slots=None, padding_mask=None):
+        """
+        Args:
+            inputs: 输入特征 (B, N, D)
+            prev_slots: 上一帧的 Slot（用于时序传播），None 表示使用初始值
+            padding_mask: 可选填充掩码
+        Returns:
+            slots: 更新后的 Slot (B, num_slots, slot_dim)
+            attn: 注意力权重 (B, num_slots, N)
+        """
+        B, N, D = inputs.shape
+
+        # 初始化或复用上一帧的 Slot
+        if prev_slots is None:
+            slots = self.slots_init.expand(B, -1, -1)
+        else:
+            slots = prev_slots
+
+        # 对输入进行 LayerNorm 和投影
+        inputs_norm = self.layernorm(inputs)
+        k = self.dense_k(inputs_norm).view(B, N, self.slot_dim)
+        v = self.dense_v(inputs_norm).view(B, N, self.slot_dim)
+
+        # 迭代更新 Slot
+        for _ in range(self.iters):
+            # 对当前 Slot 做 LayerNorm
+            slots_norm = self.layernorm(slots)
+            q = self.dense_q(slots_norm).view(B, self.num_slots, self.slot_dim)
+
+            # 计算注意力分数（点积，除以后向传播 D 的平方根进行缩放）
+            attn = torch.matmul(q, k.transpose(-2, -1)) / (self.slot_dim ** 0.5)
+            if padding_mask is not None:
+                attn = attn.masked_fill(padding_mask.unsqueeze(1) == 0, -float('inf'))
+
+            # 注意力归一化（反向 softmax：沿 query 维度做 softmax）
+            attn = F.softmax(attn, dim=1)
+            # 加权聚合值
+            updates = torch.matmul(attn.transpose(-2, -1), q) / (attn.sum(dim=2).unsqueeze(-1) + self.epsilon)
+            updates = self.dense_v(updates)
+
+            # GRU 更新 Slot
+            slots_flat = slots.reshape(-1, self.slot_dim)
+            updates_flat = updates.reshape(-1, self.slot_dim)
+            gru_out = self.gru(updates_flat, slots_flat)
+            slots = self.gru_proj(gru_out).reshape(B, self.num_slots, self.slot_dim)
+
+        return slots, attn
+
+
+class TimeSpaceTransformerBlock2(nn.Module):
+    '''
+    时空 Transformer 块（论文中的 SOTA 方案）。
+    同时进行空间注意力和时间注意力，然后相加融合，最后通过 MLP。
+    '''
+    def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False, dropout_rate=0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.qkv_size = qkv_size
+        self.mlp_size = mlp_size
+        self.pre_norm = pre_norm
+        self.dropout_rate = dropout_rate
+
+        assert num_heads >= 1
+        assert qkv_size % num_heads == 0, "qkv_size 必须能被 num_heads 整除"
+        self.head_dim = qkv_size // num_heads
+
+        # 通用注意力机制
+        self.attn = GeneralizedDotProductAttention()
+
+        # QKV 投影（空间注意力用）
+        self.dense_qs = nn.Linear(embed_dim, qkv_size)
+        self.dense_ks = nn.Linear(embed_dim, qkv_size)
+        self.dense_vs = nn.Linear(embed_dim, qkv_size)
+
+        # QKV 投影（时间注意力用）
+        self.dense_qt = nn.Linear(embed_dim, qkv_size)
+        self.dense_kt = nn.Linear(embed_dim, qkv_size)
+        self.dense_vt = nn.Linear(embed_dim, qkv_size)
+
+        # 输出投影
+        self.dense_o = nn.Linear(qkv_size, embed_dim)
+
+        # MLP
+        self.mlp = MLP(
+            input_size=embed_dim, hidden_size=mlp_size,
+            output_size=embed_dim, weight_init=None)
+
+        # LayerNorm
+        self.layernorm_q = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm_kv = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm_mlp = nn.LayerNorm(embed_dim, eps=1e-6)
+
+        # Dropout
+        if self.dropout_rate > 0:
+            self.att_drop = nn.Dropout(self.dropout_rate)
+            self.ff_drop = nn.Dropout(self.dropout_rate)
+
+    def forward(self, queries, inputs, padding_mask=None, train=False):
+        """
+        Args:
+            queries: (B, O, D) 当前查询（通常是当前帧的 Slot）
+            inputs: (B, T, O, D) 历史帧的 Slot 缓存（时间维度 T）
+            padding_mask: 可选填充掩码
+            train: 是否为训练模式
+        Returns:
+            (B, O, D) 融合时空信息后的输出
+        """
+        del padding_mask, train  # 当前未使用
+        assert queries.ndim == 3
+        assert inputs.ndim == 4
+        B, O, D = queries.shape
+
+        if self.pre_norm:
+            # === 预归一化路径 ===
+
+            # 空间注意力：在当前帧的 Slot 之间做自注意力
+            xs = self.layernorm_q(queries)
+            qs = self.dense_qs(xs).view(B, O, self.num_heads, self.head_dim)
+            ks = self.dense_ks(xs).view(B, O, self.num_heads, self.head_dim)
+            vs = self.dense_vs(xs).view(B, O, self.num_heads, self.head_dim)
+            xs, _ = self.attn(query=qs, key=ks, value=vs)
+            xs = self.dense_o(xs.reshape(B, O, self.qkv_size))
+            if self.dropout_rate > 0:
+                xs = self.att_drop(xs)
+            xs = xs + queries
+
+            # 时间注意力：当前帧的 Slot 从历史缓存中聚合信息
+            xt = self.layernorm_q(queries)
+            xt = torch.unsqueeze(xt, dim=1)  # B, 1, O, D
+            xt = rearrange(xt, 'b t o d -> (b o) t d')   # B*O, 1, D
+            xt_buffer = self.layernorm_kv(inputs)
+            xt_buffer = rearrange(xt_buffer, 'b t o d -> (b o) t d')  # B*O, T, D
+            qt = self.dense_qt(xt).view(xt.shape[0], xt.shape[1], self.num_heads, self.head_dim)
+            kt = self.dense_kt(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            vt = self.dense_vt(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*O, 1, h, d
+            xt = xt.reshape(B, O, self.qkv_size)
+            xt = self.dense_o(xt).view(B, O, self.embed_dim)
+            if self.dropout_rate > 0:
+                xt = self.att_drop(xt)
+            xt = xt + queries
+
+            # 融合空间和时间信息，过 MLP
+            y = xt + xs
+            z = self.layernorm_mlp(y)
+            z = self.mlp(z)
+            if self.dropout_rate > 0:
+                z = self.ff_drop(z)
+            z = z + y
+        else:
+            # === 后归一化路径 ===
+            # 空间注意力
+            xs = queries
+            qs = self.dense_qs(xs).view(B, O, self.num_heads, self.head_dim)
+            ks = self.dense_ks(xs).view(B, O, self.num_heads, self.head_dim)
+            vs = self.dense_vs(xs).view(B, O, self.num_heads, self.head_dim)
+            xs, _ = self.attn(query=qs, key=ks, value=vs)
+            xs = self.dense_o(xs.reshape(B, O, self.qkv_size))
+            if self.dropout_rate > 0:
+                xs = self.att_drop(xs)
+            xs = xs + queries
+
+            # 时间注意力
+            xt = torch.unsqueeze(queries, dim=1)  # B, 1, O, D
+            xt = rearrange(xt, 'b t o d -> (b o) t d')   # B*O, 1, D
+            xt_buffer = inputs
+            xt_buffer = rearrange(xt_buffer, 'b t o d -> (b o) t d')  # B*O, T, D
+            qt = self.dense_qt(xt).view(xt.shape[0], xt.shape[1], self.num_heads, self.head_dim)
+            kt = self.dense_kt(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            vt = self.dense_vt(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*O, 1, h, d
+            xt = xt.reshape(B, O, self.qkv_size)
+            xt = self.dense_o(xt).view(B, O, self.embed_dim)
+            if self.dropout_rate > 0:
+                xt = self.att_drop(xt)
+            xt = xt + queries
+
+            # 融合
+            y = xt + xs
+            # MLP
+            z = self.mlp(y)
+            if self.dropout_rate > 0:
+                z = self.ff_drop(z)
+            z = z + y
+            z = self.layernorm_mlp(z)
+        return z

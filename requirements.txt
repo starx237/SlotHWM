@@ -1,0 +1,15 @@
+# SlotPi - Python Dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+numpy>=1.22.0
+einops>=0.6.0
+pyyaml>=6.0
+tqdm>=4.64.0
+tensorboard>=2.12.0
+# Optional:
+# h5py>=3.8.0          # for CLEVRER/Physion datasets
+# opencv-python>=4.7.0 # for video processing
+# scikit-image>=0.21.0 # for SSIM metric
+# scipy>=1.10.0         # for scientific computations
+# matplotlib>=3.7.0     # for visualization
+# timm>=0.9.0           # for VDT/PatchEmbed diffusion components
