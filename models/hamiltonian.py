@@ -45,9 +45,13 @@ class Integrator:
                                     grad_outputs=torch.ones_like(energy))[0]
         dp_dt = -torch.autograd.grad(energy, q, create_graph=True,
                                      grad_outputs=torch.ones_like(energy))[0]
-        # 哈密顿梯度防爆
-        dq_dt = dq_dt / dq_dt.norm().clamp(min=10.0)
-        dp_dt = dp_dt / dp_dt.norm().clamp(min=10.0)
+        # 哈密顿梯度防爆：clip 范数而非归一化，保留幅值信息
+        dq_norm = dq_dt.norm()
+        dp_norm = dp_dt.norm()
+        if dq_norm > 10.0:
+            dq_dt = dq_dt / dq_norm * 10.0
+        if dp_norm > 10.0:
+            dp_dt = dp_dt / dp_norm * 10.0
 
         if remember_energy:
             self.energy = energy.detach().cpu().numpy()
@@ -59,7 +63,7 @@ class Integrator:
         dq_dt, dp_dt = self._get_grads(q, p, hnn, C=self.C, remember_energy=True)
         q_next = q + self.delta_t * dq_dt
         p_next = p + self.delta_t * dp_dt
-        return q_next, p_next
+        return self._clamp_qp(q_next, p_next)
 
     def _rk_step(self, q, p, hnn):
         '''龙格-库塔四阶（RK4）方法一步积分'''

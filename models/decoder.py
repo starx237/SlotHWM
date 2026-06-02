@@ -74,7 +74,7 @@ class SpatialBroadcastDecoder(nn.Module):
         if self.predict_mask:
             out = out.reshape(B, N, -1, S, S)
             alpha = torch.softmax(out[:, :, -1:], dim=1)
-            rgb = out[:, :, :-1]
+            rgb = torch.sigmoid(out[:, :, :-1])
             blended = (rgb * alpha).sum(dim=1)
             output = blended.view(B, -1, S, S)
         else:

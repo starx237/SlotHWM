@@ -60,6 +60,8 @@ class SlotPi(nn.Module):
             hidden_channels=dec_hidden, broadcast_size=bs,
             num_slots=num_slots, predict_mask=True, use_alpha=True,
         )
+        if hasattr(torch, 'compile'):
+            self.decoder = torch.compile(self.decoder)
 
         self.slotpi = SlotPiModel(config)
 
@@ -67,6 +69,27 @@ class SlotPi(nn.Module):
         self.grl = GradientReversal()
         # 单层 Linear 确保 MLP_rev 无法轻易拟合同源映射，让 GRL 能真正起作用
         self.mlp_rev = nn.Linear(dynamic_dim, static_dim)
+
+    def _add_sd_pos_encoding(self, slots, attn, grid_sz):
+        '''用注意力权重计算每个 slot 的空间位置，将 sin/cos 编码加到 S^d。'''
+        B, N, _ = slots.shape
+        D_sta = self.config.static_dim
+        D_dyn = self.config.dynamic_dim
+        attn_2d = attn.view(B, N, grid_sz, grid_sz)
+        gy = torch.linspace(-1, 1, grid_sz, device=slots.device)
+        gx = torch.linspace(-1, 1, grid_sz, device=slots.device)
+        gy, gx = torch.meshgrid(gy, gx, indexing='ij')
+        pos_y = (attn_2d * gy[None, None]).sum(dim=[2, 3])
+        pos_x = (attn_2d * gx[None, None]).sum(dim=[2, 3])
+        half = D_dyn // 4
+        freq = 1.0 / (10000.0 ** (torch.arange(0, half, device=slots.device).float() / half))
+        pe = torch.stack([
+            torch.sin(pos_y.unsqueeze(-1) * freq), torch.cos(pos_y.unsqueeze(-1) * freq),
+            torch.sin(pos_x.unsqueeze(-1) * freq), torch.cos(pos_x.unsqueeze(-1) * freq),
+        ], dim=-1).reshape(B, N, D_dyn)
+        out = slots.clone()
+        out[:, :, D_sta:] = out[:, :, D_sta:] + pe
+        return out
 
     def forward(self, frames):
         '''端到端前向 (B, T, C, H, W) → 重建帧 + slots + C + rev_pred'''
@@ -77,10 +100,12 @@ class SlotPi(nn.Module):
         static_dim = getattr(self.config, 'static_dim', 128)
         dynamic_dim = getattr(self.config, 'dynamic_dim', 128)
         slot_dim = static_dim + dynamic_dim
-        buffer_len = getattr(self.config, 'buffer_len', 10)
+        buffer_len = burnin
 
         # Phase 1: 编码所有帧 → 特征
         enc_features = self.encoder(frames)
+        B, T, N, D = enc_features.shape
+        grid_sz = int(N ** 0.5)
 
         # Phase 2: Burnin — 用 GT 帧提取 corrected slots
         buffer = torch.zeros(B, buffer_len, num_slots, slot_dim, device=frames.device)
@@ -89,6 +114,7 @@ class SlotPi(nn.Module):
         for t in range(burnin):
             feat_t = enc_features[:, t]
             slots, attn = self.slot_attention(feat_t, slots)
+            slots = self._add_sd_pos_encoding(slots, attn, grid_sz)
             burnin_slots.append(slots)
             buffer = torch.cat([buffer[:, 1:], slots.unsqueeze(1)], dim=1)
 
@@ -116,7 +142,8 @@ class SlotPi(nn.Module):
             s = burnin_slots[:, -1]
             for t in range(burnin, burnin + rollout):
                 feat_t = enc_features[:, t]
-                s, _ = self.slot_attention(feat_t, s)
+                s, attn = self.slot_attention(feat_t, s)
+                s = self._add_sd_pos_encoding(s, attn, grid_sz)
                 target_slots_list.append(s)
             target_slots = torch.stack(target_slots_list, dim=1)
 

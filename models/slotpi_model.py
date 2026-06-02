@@ -150,9 +150,9 @@ class SlotPiModel(nn.Module):
         slot_phys = torch.cat([slots[:, :, :D_sta], next_dyn], dim=-1)  # (B, N, D)
 
         # ============ 时空推理模块 ============
-        st_out = slots
+        st_out = torch.zeros_like(slots)
         for block in self.spatiotemporal_module:
-            st_out = block(st_out, buffer)  # (B, N, D) — 完整 slot 的修正量
+            st_out = block(st_out, buffer)  # (B, N, D) — 纯增量修正量（无残差泄露）
 
         # ============ 融合 ============
         pred_slots_next = slot_phys + st_out  # (B, N, D)

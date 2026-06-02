@@ -5,6 +5,7 @@ idea.md
 localreadme.md
 plan.md
 SlotPi.pdf
+issue.md
 
 # Logs
 *.log
@@ -47,6 +48,7 @@ venv/
 
 # IDE / OS
 .vscode/
+.kilo/
 .idea/
 .DS_Store
 *.swp

@@ -21,7 +21,7 @@ slot_iters: 4
 
 # 解码器
 decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [24, 24]
+broadcast_size: [48, 48]
 
 # 物理模块
 hidden_dim: 256
@@ -55,7 +55,7 @@ lambda_slots: 0.1
 lambda_images: 0.0
 lambda_energy: 0.1
 lambda_static: 0.02
-lambda_rev: 0.1
+lambda_rev: 0.05
 lambda_recon_burnin: 20.0
 lambda_recon_rollout: 20.0
 gamma_max: 0.0
