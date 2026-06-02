@@ -53,11 +53,11 @@ warmup_steps: 5000
 # 损失权重
 lambda_slots: 0.1
 lambda_images: 0.0
-lambda_energy: 1.0
+lambda_energy: 0.1
 lambda_static: 0.02
 lambda_rev: 0.1
-lambda_recon_burnin: 10.0
-lambda_recon_rollout: 10.0
+lambda_recon_burnin: 20.0
+lambda_recon_rollout: 20.0
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
