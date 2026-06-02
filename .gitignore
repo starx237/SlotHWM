@@ -21,6 +21,7 @@ build/
 
 # Data
 data/obj3d/
+data/clevrer/
 downloads/
 *.tfrecords
 
@@ -37,6 +38,7 @@ output/
 pretrained/
 wandb/
 runs/
+*.png
 
 # Environment
 .env

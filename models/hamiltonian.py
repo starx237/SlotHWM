@@ -24,7 +24,7 @@ class Integrator:
     '''
     METHODS = ["Euler", "RK4", "Leapfrog", "Yoshida"]
 
-    def __init__(self, delta_t=0.125, method="Leapfrog"):
+    def __init__(self, delta_t=0.125, method="Euler"):
         """
         Args:
             delta_t: 积分时间步长
@@ -45,9 +45,9 @@ class Integrator:
                                     grad_outputs=torch.ones_like(energy))[0]
         dp_dt = -torch.autograd.grad(energy, q, create_graph=True,
                                      grad_outputs=torch.ones_like(energy))[0]
-        # 每步哈密顿梯度裁剪（clamp 可导，不破坏 autograd 图）
-        dq_dt = dq_dt / dq_dt.norm().clamp(min=1.0)
-        dp_dt = dp_dt / dp_dt.norm().clamp(min=1.0)
+        # 哈密顿梯度防爆
+        dq_dt = dq_dt / dq_dt.norm().clamp(min=10.0)
+        dp_dt = dp_dt / dp_dt.norm().clamp(min=10.0)
 
         if remember_energy:
             self.energy = energy.detach().cpu().numpy()
@@ -435,17 +435,20 @@ class HamiltonianNet(nn.Module):
     其中第一项为动能，第二项为势能，第三项为物体间交互能（自掩码，不计算自交互）。
     '''
     def __init__(self,
-                 embed_dim: int,  # P, Q, C 的维度（即 slot_dim // 2）
+                 embed_dim: int,  # P, Q 的维度即 dynamic_dim
                  num_heads: int,
-                 qkv_size: int,   # attention 中 QKV 的维度
-                 mlp_size: int,   # MLP 隐藏层维度
+                 qkv_size: int,
+                 mlp_size: int,
+                 static_dim: int = None,  # C 的维度，默认等于 embed_dim
                  num_layers: int = 1,
                  pre_norm: bool = False,
                  weight_init=None,
                  dropout_rate=0.,
                  ):
         super().__init__()
-
+        if static_dim is None:
+            static_dim = embed_dim
+        self.static_dim = static_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.qkv_size = qkv_size
@@ -455,9 +458,9 @@ class HamiltonianNet(nn.Module):
         self.weight_init = weight_init
         self.dropout_rate = dropout_rate
 
-        # 动能网络 MLP_K(P_i, C) — 输入为 [p, C] 的拼接 (2*embed_dim)
+        # 动能网络 MLP_K(P_i, C) — 输入为 [p, C] 的拼接 (embed_dim + static_dim)
         self.kinetic_net = MLP(
-            input_size=embed_dim * 2,
+            input_size=embed_dim + static_dim,
             hidden_size=mlp_size,
             output_size=1,
             num_hidden_layers=1,
@@ -465,9 +468,9 @@ class HamiltonianNet(nn.Module):
             weight_init=weight_init,
         )
 
-        # 势能网络 MLP_V(Q_i, C) — 输入为 [q, C] 的拼接 (2*embed_dim)
+        # 势能网络 MLP_V(Q_i, C) — 输入为 [q, C] 的拼接 (embed_dim + static_dim)
         self.potential_net = MLP(
-            input_size=embed_dim * 2,
+            input_size=embed_dim + static_dim,
             hidden_size=mlp_size,
             output_size=1,
             num_hidden_layers=1,
@@ -476,12 +479,11 @@ class HamiltonianNet(nn.Module):
         )
 
         # 交互能网络：自注意力 SelfAtt_I(Q_t; C) + Linear_I
-        # 注意：C 作为 Key/Value 的上下文，Q 作为 Query
         self.interact_attn = GeneralizedDotProductAttention()
-        self.dense_iq = nn.Linear(embed_dim, qkv_size)   # Q 投影
-        self.dense_ik = nn.Linear(embed_dim, qkv_size)   # C 投影为 Key
-        self.dense_iv = nn.Linear(embed_dim, qkv_size)   # C 投影为 Value
-        self.dense_io = nn.Linear(qkv_size, 1)           # Linear_I: N -> 1
+        self.dense_iq = nn.Linear(embed_dim, qkv_size)    # Q 投影 (dynamic_dim → qkv)
+        self.dense_ik = nn.Linear(static_dim, qkv_size)   # C 投影为 Key (static_dim → qkv)
+        self.dense_iv = nn.Linear(static_dim, qkv_size)   # C 投影为 Value (static_dim → qkv)
+        self.dense_io = nn.Linear(qkv_size, 1)
 
     def forward(self, q: Array, p: Array, C: Array) -> Array:
         '''
@@ -542,40 +544,36 @@ class Slot_HamiltonianNet(nn.Module):
     '''
     def __init__(self,
                  num_slots: int,
-                 embed_dim: int,
+                 embed_dim: int,  # q、p 和动态子空间的维度
                  num_heads: int,
                  qkv_size: int,
                  mlp_size: int,
+                 static_dim: int = None,  # C 的维度，默认等于 embed_dim
+                 integrator_method: str = "Leapfrog",
                  pre_norm: bool = False,
                  weight_init=None,
                  dropout_rate: float = 0.1,
-                 # q、p 网络配置
                  num_layers: int = 1,
-                 # H 网络配置
                  h_layers=1,
-                 # 最终 MLP 配置
                  out_mlp=False,
                  out_hidden_layers=1
                  ):
         super().__init__()
-
-        # 通用参数
+        if static_dim is None:
+            static_dim = embed_dim
+        self.static_dim = static_dim
         self.dropout_rate = dropout_rate
         self.weight_init = weight_init
         self.pre_norm = pre_norm
         self.num_heads = num_heads
         self.mlp_size = mlp_size
-
-        # q、p_Attentions 参数
         self.embed_dim = embed_dim
         self.qkv_size = qkv_size
         self.num_layers = num_layers
-
-        # H_Attention 参数
         self.H_layers = h_layers
-
         self.out_mlp = out_mlp
         self.out_hidden_layers = out_hidden_layers
+        self.integrator_method = integrator_method
 
         # q-p 网络：从 Slot 中提取位置和动量信息
         self.qp_net = qp_Attentions(
@@ -591,9 +589,10 @@ class Slot_HamiltonianNet(nn.Module):
             out_hidden_layers=self.out_hidden_layers
         )
 
-        # 哈密顿量网络：输入为 q, p, C，每个维度为 embed_dim
+        # 哈密顿量网络
         self.H_net = HamiltonianNet(
-            embed_dim=self.embed_dim,  # q, p, C 各自维度
+            embed_dim=self.embed_dim,
+            static_dim=self.static_dim,
             num_heads=self.num_heads,
             qkv_size=self.qkv_size,
             mlp_size=self.mlp_size,
@@ -602,37 +601,42 @@ class Slot_HamiltonianNet(nn.Module):
             weight_init=self.weight_init,
             dropout_rate=self.dropout_rate,
         )
-        # 积分器
-        self.integrator = Integrator()
+        # 积分器（方法从配置传入）
+        self.integrator = Integrator(method=self.integrator_method)
         # 输入输出归一化层
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
 
-    def forward(self, slot: Array, buffer: Array, C: Optional[Array] = None):
+    def forward(self, slot: Array, buffer: Array, C: Optional[Array] = None,
+                return_energy: bool = False):
         '''
         Args:
             slot: 当前时间步的 Slot, shape (B, N, D)
             buffer: 历史帧缓存, shape (B, T, N, D)
             C: 静态特征上下文, shape (B, N, D)，由 SlotPiModel 计算并传入
+            return_energy: 是否返回积分前后的能量对用于 L_energy
         Returns:
             q_next: 下一时间步的 Slot 位置, shape (B, N, D)
             p_next: 下一时间步的 Slot 动量, shape (B, N, D)
+            如果 return_energy=True，额外返回 (E_before, E_after)
         '''
-        # 可选预归一化
         if self.pre_norm:
             slot = self.mlp_norm(slot)
             buffer = self.mlp_norm(buffer)
 
-        # 从当前 Slot 中求解 q 和 p
         q, p = self.qp_net(slot, buffer)
         q.requires_grad_(True)
         p.requires_grad_(True)
 
-        # 使用积分器进行一步积分（需要启用梯度以计算哈密顿量的导数）
+        E_before = self.H_net(q, p, C=C) if (return_energy and C is not None) else None
+
         with torch.enable_grad():
             q_next, p_next = self.integrator.step(q, p, self.H_net, C=C)
 
         if not self.pre_norm:
-            # 如果没有做预归一化，则在输出端对 q 做归一化
             q_next = self.mlp_norm(q_next)
+
+        if return_energy and C is not None:
+            E_after = self.H_net(q_next, p_next, C=C)
+            return q_next, p_next, (E_before, E_after)
 
         return q_next, p_next

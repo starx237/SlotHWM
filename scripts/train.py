@@ -3,6 +3,9 @@
 # Usage: python scripts/train.py --config config/obj3d.yaml --workdir experiments/obj3d
 
 import os, sys, argparse, yaml
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['MKL_NUM_THREADS'] = '1'
+os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
 import torch
 from types import SimpleNamespace
 from dotenv import load_dotenv
@@ -34,6 +37,10 @@ def load_wandb_config():
 
 
 def main():
+    log_fp = open('log.txt', 'a', buffering=1)
+    os.dup2(log_fp.fileno(), sys.stdout.fileno())
+    os.dup2(log_fp.fileno(), sys.stderr.fileno())
+
     setup_cuda()
     parser = argparse.ArgumentParser(description='SlotPi Training')
     parser.add_argument('--config', type=str, required=True)

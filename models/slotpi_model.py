@@ -23,8 +23,10 @@ class SlotPiModel(nn.Module):
         super().__init__()
         self.config = config
 
-        # 从配置中获取两个子空间的维度（使用 getattr 确保兼容性）
-        self.slot_dim = getattr(config, 'slot_dim', 128)
+        # 从配置中获取两个子空间的维度
+        self.static_dim = getattr(config, 'static_dim', 128)
+        self.dynamic_dim = getattr(config, 'dynamic_dim', 128)
+        self.slot_dim = self.static_dim + self.dynamic_dim
         self.hidden_dim = getattr(config, 'hidden_dim', 256)
         self.num_heads = getattr(config, 'num_heads', 4)
         self.qkv_size = getattr(config, 'qkv_size', 128)
@@ -33,17 +35,18 @@ class SlotPiModel(nn.Module):
         self.buffer_len = getattr(config, 'buffer_len', 10)
 
         # === C 上下文计算模块：从静态特征序列中提取上下文 C ===
-        # SelfAtt_C: 自注意力作用于历史帧的静态特征
         self.C_attn = GeneralizedDotProductAttention()
-        self.dense_cq = nn.Linear(self.slot_dim // 2, self.qkv_size)
-        self.dense_ck = nn.Linear(self.slot_dim // 2, self.qkv_size)
-        self.dense_cv = nn.Linear(self.slot_dim // 2, self.qkv_size)
-        self.dense_co = nn.Linear(self.qkv_size, self.slot_dim // 2)
+        self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
+        self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
+        self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
+        self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
 
         # === 物理模块：基于哈密顿力学 ===
         self.physics_module = Slot_HamiltonianNet(
             num_slots=self.num_slots,
-            embed_dim=self.slot_dim // 2,  # q, p, C 的维度（动态子空间）
+            embed_dim=self.dynamic_dim,
+            static_dim=self.static_dim,
+            integrator_method=getattr(config, 'integrator_method', 'Euler'),
             num_heads=self.num_heads,
             qkv_size=self.qkv_size,
             mlp_size=getattr(config, 'mlp_size', 256),
@@ -73,9 +76,9 @@ class SlotPiModel(nn.Module):
 
         # === MLP_S：融合 Q_next 和 C 生成新的动态特征 ===
         self.fusion_mlp = MLP(
-            input_size=self.slot_dim,  # [Q_next, C] 的拼接：slot_dim/2 + slot_dim/2 = slot_dim
+            input_size=self.static_dim + self.dynamic_dim,  # [Q_next(DD), C(SD)] 拼接 = slot_dim
             hidden_size=self.hidden_dim,
-            output_size=self.slot_dim // 2,
+            output_size=self.dynamic_dim,
             num_hidden_layers=1,
             activate_output=True,
         )
@@ -83,16 +86,13 @@ class SlotPiModel(nn.Module):
     def compute_C(self, burnin_slots):
         '''
         从 burn-in 阶段的静态特征序列计算 C。
-        在 SelfAtt_C 之前，S^c 会先注入时间位置编码（idea.md §0）。
         Args:
-            burnin_slots: (B, T_burn, N, D) burn-in 阶段的所有 slots
+            burnin_slots: (B, T_burn, N, D) burn-in 阶段的所有 slots, D = static_dim + dynamic_dim
         Returns:
-            C: (B, N, D') 静态上下文，D' = slot_dim//2
+            C: (B, N, D') 静态上下文，D' = static_dim
         '''
         B, T, N, D = burnin_slots.shape
-        D_sta = D // 2
-        D_dyn = D - D_sta
-        # 提取静态特征 S^c，只对前半部分（静态特征）操作
+        D_sta = self.static_dim
         sta = burnin_slots[:, :, :, :D_sta]  # (B, T, N, D')
 
         # 注入时间位置编码（S^c 只需注入时间位置编码，无需注入空间位置编码）
@@ -127,23 +127,26 @@ class SlotPiModel(nn.Module):
             如果 return_energy=True，额外返回 energy (B,)
         '''
         B, N, D = slots.shape
-        D_sta = D // 2
+        D_sta = self.static_dim
+        D_dyn = self.dynamic_dim
 
-        # 计算或获取 C（静态上下文）
         if C is None:
-            C = self.compute_C(buffer)  # (B, N, D')
+            C = self.compute_C(buffer)
 
         # ============ 物理模块 ============
-        # 只使用后半段（动态特征）
-        slots_dyn = slots[:, :, D_sta:]  # (B, N, D/2)
-        buffer_dyn = buffer[:, :, :, D_sta:]  # (B, T, N, D/2)
-        q_next, p_next = self.physics_module(slots_dyn, buffer_dyn, C=C)
-        # q_next, p_next: (B, N, D/2)
+        slots_dyn = slots[:, :, D_sta:]  # (B, N, dynamic_dim)
+        buffer_dyn = buffer[:, :, :, D_sta:]  # (B, T, N, dynamic_dim)
+        phys_out = self.physics_module(slots_dyn, buffer_dyn, C=C,
+                                        return_energy=return_energy)
+        if return_energy:
+            q_next, p_next, energy_pair = phys_out
+        else:
+            q_next, p_next = phys_out
+            energy_pair = None
 
-        # 融合：MLP_S(Q_next, C) → S^d_next，与静态部分拼接得到完整物理预测
-        fusion_input = torch.cat([q_next, C], dim=-1)  # (B, N, D)
-        next_dyn = self.fusion_mlp(fusion_input)       # (B, N, D/2)
-        # 物理预测的完整 slot
+        # 融合：MLP_S(Q_next, C) → S^d_next
+        fusion_input = torch.cat([q_next, C], dim=-1)  # (B, N, dynamic_dim + static_dim)
+        next_dyn = self.fusion_mlp(fusion_input)       # (B, N, dynamic_dim)
         slot_phys = torch.cat([slots[:, :, :D_sta], next_dyn], dim=-1)  # (B, N, D)
 
         # ============ 时空推理模块 ============
@@ -152,14 +155,10 @@ class SlotPiModel(nn.Module):
             st_out = block(st_out, buffer)  # (B, N, D) — 完整 slot 的修正量
 
         # ============ 融合 ============
-        # ST_{t+1} 修正完整 slot（包含静态和动态两个部分）
         pred_slots_next = slot_phys + st_out  # (B, N, D)
 
         if return_energy:
-            q, p = self.physics_module.qp_net(slots_dyn, buffer_dyn)
-            energy = self.physics_module.H_net(q, p, C=C)
-            return pred_slots_next, energy
-
+            return pred_slots_next, energy_pair
         return pred_slots_next
 
     def predict_rollout(self, initial_slots, initial_buffer, C, rollout_steps):

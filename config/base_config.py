@@ -8,7 +8,8 @@ import torch
 class SlotPiConfig:
     # Model architecture
     num_slots: int = 7
-    slot_dim: int = 128
+    static_dim: int = 64
+    dynamic_dim: int = 64
     hidden_dim: int = 256
     num_heads: int = 4
     qkv_size: int = 128
@@ -34,7 +35,7 @@ class SlotPiConfig:
 
     # Physics module
     delta_t: float = 0.125
-    integrator_method: str = "Leapfrog"
+    integrator_method: str = "Euler"
     lambda_phys: float = 1.0
 
     # Spatiotemporal

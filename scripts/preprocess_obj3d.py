@@ -26,11 +26,19 @@ def decode_frame(record_bytes):
         scene.ParseFromString(record_bytes)
         features = Features()
         features.ParseFromString(scene.image)
-        feat = features.feature.get('image')
+        # 兼容纯 Python protobuf（RepeatedCompositeFieldContainer）和 C++ 模式（map）
+        feat = None
+        if hasattr(features.feature, 'get'):
+            feat = features.feature.get('image')
+        else:
+            for entry in features.feature:
+                if entry.key == 'image':
+                    feat = entry.value
+                    break
         if feat and feat.HasField('bytes_list'):
             raw = b''.join(feat.bytes_list.value)
             if len(raw) == 12288:
-                return np.frombuffer(raw, dtype=np.uint8).reshape(3, 64, 64)
+                return np.frombuffer(raw, dtype=np.uint8).reshape(64, 64, 3).transpose(2, 0, 1)
     except Exception:
         pass
     return np.zeros((3, 64, 64), dtype=np.uint8)

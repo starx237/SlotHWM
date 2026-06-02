@@ -4,7 +4,7 @@ from models.encoder import CNNEncoder, ResNetEncoder
 from models.decoder import SpatialBroadcastDecoder
 from models.attention import SlotAttention
 from models.slotpi_model import SlotPiModel
-from models.misc import GradientReversal, MLP
+from models.misc import GradientReversal
 
 
 class SlotPi(nn.Module):
@@ -24,7 +24,9 @@ class SlotPi(nn.Module):
             img_sz = img_sz[0]
 
         in_channels = getattr(config, 'in_channels', 3)
-        slot_dim = getattr(config, 'slot_dim', 128)
+        static_dim = getattr(config, 'static_dim', 128)
+        dynamic_dim = getattr(config, 'dynamic_dim', 128)
+        slot_dim = static_dim + dynamic_dim
         num_slots = getattr(config, 'num_slots', 7)
 
         enc_type = getattr(config, 'encoder_type', 'cnn')
@@ -62,10 +64,9 @@ class SlotPi(nn.Module):
         self.slotpi = SlotPiModel(config)
 
         # GRL + 反向预测器（idea.md §4）
-        D_sta = slot_dim // 2
-        rev_hidden = getattr(config, 'rev_mlp_hidden', slot_dim)
         self.grl = GradientReversal()
-        self.mlp_rev = MLP(D_sta, rev_hidden, D_sta, num_hidden_layers=2)
+        # 单层 Linear 确保 MLP_rev 无法轻易拟合同源映射，让 GRL 能真正起作用
+        self.mlp_rev = nn.Linear(dynamic_dim, static_dim)
 
     def forward(self, frames):
         '''端到端前向 (B, T, C, H, W) → 重建帧 + slots + C + rev_pred'''
@@ -73,7 +74,9 @@ class SlotPi(nn.Module):
         burnin = self.config.burnin_frames
         rollout = self.config.rollout_frames
         num_slots = self.config.num_slots
-        slot_dim = self.config.slot_dim
+        static_dim = getattr(self.config, 'static_dim', 128)
+        dynamic_dim = getattr(self.config, 'dynamic_dim', 128)
+        slot_dim = static_dim + dynamic_dim
         buffer_len = getattr(self.config, 'buffer_len', 10)
 
         # Phase 1: 编码所有帧 → 特征
@@ -93,12 +96,16 @@ class SlotPi(nn.Module):
         burnin_slots = torch.stack(burnin_slots, dim=1)
         C = self.slotpi.compute_C(burnin_slots)
 
-        # Phase 3: Rollout — SlotPi 自回归预测未来 slots
+        # Phase 3: Rollout — SlotPi 自回归预测未来 slots（同时计算能量对用于 L_energy）
         pred_slots_list = []
+        energy_pairs = []
         cur_slots = slots
         for t in range(rollout):
-            next_slots = self.slotpi(cur_slots, buffer, C=C)
+            out = self.slotpi(cur_slots, buffer, C=C, return_energy=True)
+            next_slots, ep = out if isinstance(out, tuple) else (out, None)
             pred_slots_list.append(next_slots)
+            if ep is not None:
+                energy_pairs.append(ep)
             buffer = torch.cat([buffer[:, 1:], next_slots.unsqueeze(1)], dim=1)
             cur_slots = next_slots
         pred_slots = torch.stack(pred_slots_list, dim=1)
@@ -119,11 +126,11 @@ class SlotPi(nn.Module):
         with torch.no_grad():
             dec_target = torch.stack([self.decoder(s) for s in target_slots_list], dim=1)
 
-        # GRL 反向预测（idea.md §4）
-        D_sta = slot_dim // 2
+        # GRL 反向预测（idea.md §4）：用 S^d 预测 S^c，梯度逆转迫使解耦
         all_slots = torch.cat([burnin_slots, pred_slots], dim=1)
-        slots_dyn = all_slots[:, :, :, D_sta:]
+        slots_dyn = all_slots[:, :, :, static_dim:]
         rev_pred = self.mlp_rev(self.grl(slots_dyn))
+        S_c = all_slots[:, :, :, :static_dim]  # 静态特征，作为 rev 预测目标
 
         return {
             "outputs": {
@@ -138,4 +145,6 @@ class SlotPi(nn.Module):
             },
             "C": C,
             "rev_pred": rev_pred,
+            "S_c": S_c,
+            "energy_pairs": energy_pairs if energy_pairs else None,
         }

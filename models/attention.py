@@ -189,9 +189,9 @@ class SlotAttention(nn.Module):
             updates = torch.einsum("...hqk,...khd->...qhd", attn, v)
             updates = updates.reshape(B, self.num_slots, -1)
 
-            # GRU 更新
-            slots = self.gru(updates.reshape(-1, self.slot_dim), slots_prev.reshape(-1, self.slot_dim))
-            slots = slots.reshape(B, self.num_slots, self.slot_dim) + slots_prev
+            # GRU 更新（直接替换，不加残差 — 残差在高维下会导致数值爆炸）
+            gru_in = self.gru(updates.reshape(-1, self.slot_dim), slots_prev.reshape(-1, self.slot_dim))
+            slots = gru_in.reshape(B, self.num_slots, self.slot_dim)
 
         # 可选 MLP
         if self.mlp_size is not None:
@@ -312,84 +312,6 @@ class TimeSpaceTransformerBlock2(nn.Module):
             z = self.layernorm_mlp(z)
 
         return z
-
-
-class SlotAttention(nn.Module):
-    '''
-    Slot Attention 模块，用于从输入特征中提取一组 Slot（物体表示）。
-    通过迭代的交叉注意力机制，将输入特征绑定到可学习的 Slot 上。
-    '''
-    def __init__(self, num_slots, slot_dim, hidden_dim, iters=3, epsilon=1e-8):
-        super().__init__()
-        self.num_slots = num_slots            # Slot 数量
-        self.slot_dim = slot_dim              # Slot 特征维度
-        self.hidden_dim = hidden_dim          # GRU 隐藏层维度
-        self.iters = iters                    # 迭代次数
-        self.epsilon = epsilon                # 数值稳定常数
-
-        # 初始化 Slot 参数（可学习的嵌入向量）
-        self.slots_init = nn.Parameter(torch.randn(1, num_slots, slot_dim))
-
-        # QKV 投影和注意力机制
-        self.dense_q = nn.Linear(slot_dim, slot_dim, bias=False)
-        self.dense_k = nn.Linear(slot_dim, slot_dim, bias=False)
-        self.dense_v = nn.Linear(slot_dim, slot_dim, bias=False)
-
-        # Slot 更新的 GRU
-        self.gru = nn.GRUCell(slot_dim, hidden_dim)
-        # 将 GRU 隐藏状态投影回 slot_dim
-        self.gru_proj = nn.Linear(hidden_dim, slot_dim)
-
-        # LayerNorm（预归一化用）
-        self.layernorm = nn.LayerNorm(slot_dim, eps=1e-6)
-
-    def forward(self, inputs, prev_slots=None, padding_mask=None):
-        """
-        Args:
-            inputs: 输入特征 (B, N, D)
-            prev_slots: 上一帧的 Slot（用于时序传播），None 表示使用初始值
-            padding_mask: 可选填充掩码
-        Returns:
-            slots: 更新后的 Slot (B, num_slots, slot_dim)
-            attn: 注意力权重 (B, num_slots, N)
-        """
-        B, N, D = inputs.shape
-
-        # 初始化或复用上一帧的 Slot
-        if prev_slots is None:
-            slots = self.slots_init.expand(B, -1, -1)
-        else:
-            slots = prev_slots
-
-        # 对输入进行 LayerNorm 和投影
-        inputs_norm = self.layernorm(inputs)
-        k = self.dense_k(inputs_norm).view(B, N, self.slot_dim)
-        v = self.dense_v(inputs_norm).view(B, N, self.slot_dim)
-
-        # 迭代更新 Slot
-        for _ in range(self.iters):
-            # 对当前 Slot 做 LayerNorm
-            slots_norm = self.layernorm(slots)
-            q = self.dense_q(slots_norm).view(B, self.num_slots, self.slot_dim)
-
-            # 计算注意力分数（点积，除以后向传播 D 的平方根进行缩放）
-            attn = torch.matmul(q, k.transpose(-2, -1)) / (self.slot_dim ** 0.5)
-            if padding_mask is not None:
-                attn = attn.masked_fill(padding_mask.unsqueeze(1) == 0, -float('inf'))
-
-            # 注意力归一化（反向 softmax：沿 query 维度做 softmax）
-            attn = F.softmax(attn, dim=1)
-            # 加权聚合值
-            updates = torch.matmul(attn, v) / (attn.sum(dim=-1).unsqueeze(-1) + self.epsilon)
-            updates = self.dense_v(updates)
-
-            # GRU 更新 Slot
-            slots_flat = slots.reshape(-1, self.slot_dim)
-            updates_flat = updates.reshape(-1, self.slot_dim)
-            gru_out = self.gru(updates_flat, slots_flat)
-            slots = self.gru_proj(gru_out).reshape(B, self.num_slots, self.slot_dim)
-
-        return slots, attn
 
 
 class TimeSpaceTransformerBlock2(nn.Module):

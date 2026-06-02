@@ -1,27 +1,27 @@
-# SlotPi 端到端训练配置 — OBJ3D
-dataset: "obj3d"
-data_root: "./data/obj3d"
+# SlotPi 端到端训练配置 — CLEVRER
+dataset: "clevrer"
+data_root: "./data/clevrer"
 num_workers: 4
 
-# 数据滑动窗口
-slide_stride: 5
+
+
 
 # 编码器
 encoder_type: "cnn"
 in_channels: 3
-img_size: 64
-encoder_hidden: 32
+img_size: 128
+encoder_hidden: 64
 
 # Slot Attention
 num_slots: 7
-static_dim: 32
-dynamic_dim: 96
+static_dim: 64
+dynamic_dim: 64
 slot_hidden: 128
-slot_iters: 3
+slot_iters: 4
 
 # 解码器
 decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [8, 8]
+broadcast_size: [24, 24]
 
 # 物理模块
 hidden_dim: 256
@@ -38,28 +38,26 @@ delta_t: 0.125
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
-# 训练（STATM、SlotPi 基线 160k 步）
-num_steps: 160000
+# 训练（batch_size=32*卡数）
+num_steps: 500000
 batch_size: 32
 learning_rate: 0.0002
 weight_decay: 0.0
 max_grad_norm: 20.0
-num_frames: 16
 burnin_frames: 8
 rollout_frames: 8
-buffer_len: 10
 
-# 学习率调度（论文：前 2.5% 步数 warmup，余弦退火）
-warmup_steps: 4000
+# 学习率调度（warmup + cosine decay）
+warmup_steps: 5000
 
 # 损失权重
-lambda_slots: 0.25
-lambda_images: 1.0
-lambda_energy: 10.0
-lambda_static: 0.5
-lambda_rev: 0.01
-lambda_recon_burnin: 1.0
-lambda_recon_rollout: 1.0
+lambda_slots: 0.1
+lambda_images: 0.0
+lambda_energy: 1.0
+lambda_static: 0.02
+lambda_rev: 0.1
+lambda_recon_burnin: 10.0
+lambda_recon_rollout: 10.0
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
@@ -71,4 +69,4 @@ rev_grad_max_norm: 5.0
 log_every: 10
 save_every: 5000
 keep_last_checkpoints: 3
-workdir: "./experiments/obj3d"
+workdir: "./experiments/clevrer"

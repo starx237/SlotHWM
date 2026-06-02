@@ -1,9 +1,16 @@
 import os, glob, math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from .losses import SlotPiLoss
+
+try:
+    from PIL import Image, ImageDraw
+    _PIL_AVAIL = True
+except ImportError:
+    _PIL_AVAIL = False
 
 
 class WandBLogger:
@@ -63,6 +70,7 @@ class Trainer:
         self.lambda_recon_burnin = getattr(config, 'lambda_recon_burnin', 1.0)
         self.lambda_recon_rollout = getattr(config, 'lambda_recon_rollout', 1.0)
         self.rev_grad_max_norm = getattr(config, 'rev_grad_max_norm', 5.0)
+        self.scaler = torch.cuda.amp.GradScaler()
 
     def _set_gamma(self, step):
         '''计算当前步数的 gamma 并设到模型的 GRL 上。'''
@@ -76,26 +84,29 @@ class Trainer:
         frames = batch["video"].to(self.device)
         out = self.model(frames)
 
-        # 解码器输出尺寸与目标不匹配时，下采样目标
+        # 解码器输出在 broadcast_size 低分辨率，上采样到原分辨率计算 loss
         dec_size = out["outputs"]["video_burnin"].shape[-1]
         target_size = frames.shape[-1]
         if dec_size != target_size:
-            b, t = frames.shape[:2]
-            flat = frames[:, :self.burnin].reshape(-1, 3, target_size, target_size)
-            target_burnin = nn.functional.interpolate(flat, size=dec_size, mode='bilinear'
-            ).reshape(b, self.burnin, 3, dec_size, dec_size)
-            flat = frames[:, self.burnin:self.burnin + self.rollout].reshape(-1, 3, target_size, target_size)
-            target_rollout = nn.functional.interpolate(flat, size=dec_size, mode='bilinear'
-            ).reshape(b, self.rollout, 3, dec_size, dec_size)
+            b = frames.shape[0]
+            up = lambda x: nn.functional.interpolate(
+                x.reshape(-1, 3, dec_size, dec_size),
+                size=target_size, mode='bilinear'
+            ).reshape(b, -1, 3, target_size, target_size)
+            video_burnin = up(out["outputs"]["video_burnin"])
+            video_pred = up(out["outputs"]["video_pred"])
         else:
-            target_burnin = frames[:, :self.burnin]
-            target_rollout = frames[:, self.burnin:self.burnin + self.rollout]
+            video_burnin = out["outputs"]["video_burnin"]
+            video_pred = out["outputs"]["video_pred"]
 
-        # 重建损失（各自独立权重，防过拟合）
+        target_burnin = frames[:, :self.burnin]
+        target_rollout = frames[:, self.burnin:self.burnin + self.rollout]
+
+        # 重建损失
         recon_burnin = self.lambda_recon_burnin * nn.functional.mse_loss(
-            out["outputs"]["video_burnin"], target_burnin)
+            video_burnin, target_burnin)
         recon_rollout = self.lambda_recon_rollout * nn.functional.mse_loss(
-            out["outputs"]["video_pred"], target_rollout)
+            video_pred, target_rollout)
         recon_loss = recon_burnin + recon_rollout
 
         # slot 预测损失（含 slot_loss + static_loss + rev_loss，由 loss_fn 统一返回）
@@ -104,7 +115,8 @@ class Trainer:
             out["slots"]["predicted"], out["slots"]["target"],
             slots_full_seq=all_slots,
             rev_pred=out.get("rev_pred"),
-            C=out.get("C"))
+            S_c=out.get("S_c"),
+            energy=out.get("energy_pairs"))
 
         # 总损失 = 重建 + slot 预测 + 静态正则 + GRL 反向
         total_loss = recon_loss + slot_pred_loss
@@ -113,33 +125,98 @@ class Trainer:
         return total_loss, aux
 
     def train_step(self, batch):
-        '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数。'''
+        '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数（AMP 混合精度）。'''
         self.model.train()
         self.optimizer.zero_grad()
-        loss, aux = self._compute_loss(batch)
-        loss.backward()
+        with torch.cuda.amp.autocast():
+            loss, aux = self._compute_loss(batch)
+        self.scaler.scale(loss).backward()
         # 对 rev 分支单独做梯度裁剪（防止 L_rev 过大破坏编码器）
         if hasattr(self.model, 'mlp_rev') and self.rev_grad_max_norm > 0:
+            self.scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.mlp_rev.parameters(), self.rev_grad_max_norm)
         # 全局梯度裁剪
         if self.max_grad_norm > 0:
             grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         else:
             grad_norm = 0.0
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         if self.scheduler is not None:
             self.scheduler.step()
         return loss.item(), aux, grad_norm
 
-    def evaluate(self, dataloader):
-        '''验证集评估。'''
+    def evaluate(self, dataloader, step=None, num_viz=5):
+        '''验证集评估 + 保存 5 张对比图到 eval_images/step_{step}/。'''
         self.model.eval()
         total_loss = 0
+        viz_samples = []
         with torch.no_grad():
-            for batch in dataloader:
+            for i, batch in enumerate(dataloader):
                 loss, _ = self._compute_loss(batch)
                 total_loss += loss.item()
+
+                if _PIL_AVAIL and step is not None and len(viz_samples) < num_viz:
+                    frames = batch["video"].to(self.device)
+                    out = self.model(frames)
+                    # 取 batch 中第 0 个样本
+                    viz_samples.append((out, frames[0:1]))
+
+        if _PIL_AVAIL and step is not None and viz_samples:
+            self._save_viz_batch(viz_samples, step)
+
         return total_loss / max(1, len(dataloader))
+
+    def _save_viz_batch(self, samples, step):
+        '''保存 num_viz 张对比图，每张 4 行 × N 列。删除旧 step 文件夹。'''
+        viz_dir = os.path.join(self.config.workdir, 'eval_images')
+        # 删除旧的 step 文件夹
+        for old in glob.glob(os.path.join(viz_dir, 'step_*')):
+            import shutil
+            shutil.rmtree(old, ignore_errors=True)
+
+        step_dir = os.path.join(viz_dir, f'step_{step}')
+        os.makedirs(step_dir, exist_ok=True)
+
+        for idx, (out, frames) in enumerate(samples):
+            B, T, C, H, W = frames.shape
+            burnin, rollout = self.burnin, self.rollout
+            target_size = W  # 64 (OBJ3D) 或 128 (CLEVRER)
+
+            def upscale(dec_tensor):
+                '''解码器输出 (B,T,C,ds,ds) → (B,T,C,target,target)'''
+                ds = dec_tensor.shape[-1]
+                flat = dec_tensor.reshape(-1, 3, ds, ds)
+                up = F.interpolate(flat, size=target_size, mode='bilinear')
+                return up.reshape(dec_tensor.shape[0], dec_tensor.shape[1], 3, target_size, target_size)
+
+            dec_b = upscale(out["outputs"]["video_burnin"][:1])
+            dec_p = upscale(out["outputs"]["video_pred"][:1])
+            gt_b = frames[:, :burnin]
+            gt_r = frames[:, burnin:burnin + rollout]
+
+            n_cols = max(burnin, rollout)
+            S = min(80, 2000 // max(n_cols, 1))
+            canvas = Image.new('RGB', (n_cols * S, 4 * S), (255, 255, 255))
+            draw = ImageDraw.Draw(canvas)
+
+            def put(t, row, col):
+                arr = t.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
+                im = Image.fromarray((arr * 255).astype('uint8'))
+                im = im.resize((S, S), Image.BILINEAR)
+                canvas.paste(im, (col * S, row * S))
+
+            for t in range(burnin):
+                put(gt_b[0, t], 0, t)
+                put(dec_b[0, t], 1, t)
+            for t in range(rollout):
+                put(gt_r[0, t], 2, t)
+                put(dec_p[0, t], 3, t)
+
+            for i, label in enumerate(['GT Burnin', 'Recon Burnin', 'GT Rollout', 'Pred Rollout']):
+                draw.text((2, i * S + 2), label, fill=(0, 0, 0))
+
+            canvas.save(os.path.join(step_dir, f'sample_{idx}.png'))
 
     def _cleanup_old_checkpoints(self):
         '''只保留最近的 keep_last 个存档。'''
@@ -151,12 +228,13 @@ class Trainer:
             ckpts = ckpts[1:]
 
     def save_checkpoint(self, path, step, loss):
-        '''保存完整存档（model + optimizer + scheduler）。'''
+        '''保存完整存档（model + optimizer + scheduler + scaler）。'''
         torch.save({
             "step": step,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
+            "scaler": self.scaler.state_dict(),
             "loss": loss,
         }, path)
 
@@ -167,6 +245,8 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler and ckpt.get("scheduler"):
             self.scheduler.load_state_dict(ckpt["scheduler"])
+        if ckpt.get("scaler"):
+            self.scaler.load_state_dict(ckpt["scaler"])
         return ckpt.get("step", 0), ckpt.get("loss", float("inf"))
 
     def train(self, train_loader, val_loader, num_steps, start_step=0):
@@ -194,29 +274,32 @@ class Trainer:
                         "slot": f"{aux['slot_loss']:.4f}",
                         "static": f"{aux['static_loss']:.6f}",
                         "rev": f"{aux['rev_loss']:.6f}",
+                        "energy": f"{aux['energy_loss']:.6f}",
                         "lr": f"{lr:.2e}",
                         "gamma": f"{gamma:.3f}",
                     })
 
                     # TensorBoard
-                    self.writer.add_scalar("loss/total", loss_val, global_step)
-                    self.writer.add_scalar("loss/recon_burnin", aux['recon_burnin'], global_step)
-                    self.writer.add_scalar("loss/recon_rollout", aux['recon_rollout'], global_step)
-                    self.writer.add_scalar("loss/slot", aux['slot_loss'], global_step)
-                    self.writer.add_scalar("loss/static", aux['static_loss'], global_step)
-                    self.writer.add_scalar("loss/rev", aux['rev_loss'], global_step)
+                    self.writer.add_scalar("loss/total", loss_val*10, global_step)
+                    self.writer.add_scalar("loss/recon_burnin", aux['recon_burnin']*10, global_step)
+                    self.writer.add_scalar("loss/recon_rollout", aux['recon_rollout']*10, global_step)
+                    self.writer.add_scalar("loss/slot", aux['slot_loss']*10, global_step)
+                    self.writer.add_scalar("loss/static", aux['static_loss']*10, global_step)
+                    self.writer.add_scalar("loss/rev", aux['rev_loss']*10, global_step)
+                    self.writer.add_scalar("loss/energy", aux['energy_loss']*10, global_step)
                     self.writer.add_scalar("lr", lr, global_step)
                     self.writer.add_scalar("rev_weight", gamma, global_step)
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
 
                     # WandB
                     self.wandb.log({
-                        "loss/total": loss_val,
-                        "loss/recon_burnin": aux['recon_burnin'],
-                        "loss/recon_rollout": aux['recon_rollout'],
-                        "loss/slot": aux['slot_loss'],
-                        "loss/static": aux['static_loss'],
-                        "loss/rev": aux['rev_loss'],
+                        "loss/recon_burnin": aux['recon_burnin']*10,
+                        "loss/recon_rollout": aux['recon_rollout']*10,
+                        "loss/slot": aux['slot_loss']*10,
+                        "loss/static": aux['static_loss']*10,
+                        "loss/rev": aux['rev_loss']*10,
+                        "loss/energy": aux['energy_loss']*10,
+                        "loss/total": loss_val*10,
                         "train/lr": lr,
                         "train/rev_weight": gamma,
                         "train/grad_norm": grad_norm,
@@ -233,9 +316,9 @@ class Trainer:
                             os.path.join(self.ckpt_dir, "best.pt"),
                             global_step, loss_val)
 
-            val_loss = self.evaluate(val_loader)
-            self.writer.add_scalar("loss/eval", val_loss, global_step)
-            self.wandb.log({"loss/eval": val_loss}, step=global_step)
+            val_loss = self.evaluate(val_loader, step=global_step)
+            self.writer.add_scalar("loss/eval", val_loss*10, global_step)
+            self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
             print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
 
         pbar.close()
