@@ -14,14 +14,14 @@ encoder_hidden: 64
 
 # Slot Attention
 num_slots: 7
-static_dim: 64
-dynamic_dim: 64
+static_dim: 96
+dynamic_dim: 32
 slot_hidden: 128
 slot_iters: 4
 
 # 解码器
 decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [48, 48]
+broadcast_size: [32, 32]
 
 # 物理模块
 hidden_dim: 256
@@ -38,32 +38,32 @@ delta_t: 0.125
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
-# 训练（batch_size=32*卡数）
+# 训练
 num_steps: 500000
-batch_size: 32
+batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
-max_grad_norm: 20.0
-burnin_frames: 8
-rollout_frames: 8
+max_grad_norm: 2.0
+burnin_frames: 4
+rollout_frames: 4
 
 # 学习率调度（warmup + cosine decay）
-warmup_steps: 5000
+warmup_steps: 3000
 
 # 损失权重
-lambda_slots: 0.1
+lambda_slots: 0.01
 lambda_images: 0.0
-lambda_energy: 0.1
+lambda_energy: 0.01
 lambda_static: 0.02
 lambda_rev: 0.05
-lambda_recon_burnin: 20.0
-lambda_recon_rollout: 20.0
+lambda_recon_burnin: 15.0
+lambda_recon_rollout: 5.0
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
 
 # GRL 反向传播梯度裁剪
-rev_grad_max_norm: 5.0
+rev_grad_max_norm: 2.0
 
 # 日志与存档
 log_every: 10

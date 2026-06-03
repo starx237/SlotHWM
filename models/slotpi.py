@@ -60,8 +60,6 @@ class SlotPi(nn.Module):
             hidden_channels=dec_hidden, broadcast_size=bs,
             num_slots=num_slots, predict_mask=True, use_alpha=True,
         )
-        if hasattr(torch, 'compile'):
-            self.decoder = torch.compile(self.decoder)
 
         self.slotpi = SlotPiModel(config)
 
@@ -69,6 +67,10 @@ class SlotPi(nn.Module):
         self.grl = GradientReversal()
         # 单层 Linear 确保 MLP_rev 无法轻易拟合同源映射，让 GRL 能真正起作用
         self.mlp_rev = nn.Linear(dynamic_dim, static_dim)
+
+        if hasattr(torch, 'compile'):
+            self.decoder = torch.compile(self.decoder)
+            self.encoder = torch.compile(self.encoder)
 
     def _add_sd_pos_encoding(self, slots, attn, grid_sz):
         '''用注意力权重计算每个 slot 的空间位置，将 sin/cos 编码加到 S^d。'''

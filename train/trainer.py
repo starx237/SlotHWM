@@ -158,8 +158,8 @@ class Trainer:
 
                 if _PIL_AVAIL and step is not None and len(viz_samples) < num_viz:
                     frames = batch["video"].to(self.device)
-                    out = self.model(frames)
-                    # 取 batch 中第 0 个样本
+                    with torch.enable_grad():
+                        out = self.model(frames)
                     viz_samples.append((out, frames[0:1]))
 
         if _PIL_AVAIL and step is not None and viz_samples:
@@ -168,9 +168,8 @@ class Trainer:
         return total_loss / max(1, len(dataloader))
 
     def _save_viz_batch(self, samples, step):
-        '''保存 num_viz 张对比图，每张 4 行 × N 列。删除旧 step 文件夹。'''
+        '''保存 num_viz 张对比图，每张 4 行 × N 列。'''
         viz_dir = os.path.join(self.config.workdir, 'eval_images')
-        # 删除旧的 step 文件夹
         for old in glob.glob(os.path.join(viz_dir, 'step_*')):
             import shutil
             shutil.rmtree(old, ignore_errors=True)
@@ -181,10 +180,9 @@ class Trainer:
         for idx, (out, frames) in enumerate(samples):
             B, T, C, H, W = frames.shape
             burnin, rollout = self.burnin, self.rollout
-            target_size = W  # 64 (OBJ3D) 或 128 (CLEVRER)
+            target_size = W
 
             def upscale(dec_tensor):
-                '''解码器输出 (B,T,C,ds,ds) → (B,T,C,target,target)'''
                 ds = dec_tensor.shape[-1]
                 flat = dec_tensor.reshape(-1, 3, ds, ds)
                 up = F.interpolate(flat, size=target_size, mode='bilinear')
@@ -201,7 +199,7 @@ class Trainer:
             draw = ImageDraw.Draw(canvas)
 
             def put(t, row, col):
-                arr = t.cpu().clamp(0, 1).permute(1, 2, 0).numpy()
+                arr = t.detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy()
                 im = Image.fromarray((arr * 255).astype('uint8'))
                 im = im.resize((S, S), Image.BILINEAR)
                 canvas.paste(im, (col * S, row * S))
@@ -216,7 +214,11 @@ class Trainer:
             for i, label in enumerate(['GT Burnin', 'Recon Burnin', 'GT Rollout', 'Pred Rollout']):
                 draw.text((2, i * S + 2), label, fill=(0, 0, 0))
 
-            canvas.save(os.path.join(step_dir, f'sample_{idx}.png'))
+            path = os.path.join(step_dir, f'sample_{idx}.png')
+            canvas.save(path)
+
+            if self.wandb.enabled:
+                self.wandb.log({f"eval/recon_{idx}": self.wandb.wandb.Image(path)}, step=step)
 
     def _cleanup_old_checkpoints(self):
         '''只保留最近的 keep_last 个存档。'''
@@ -310,11 +312,12 @@ class Trainer:
                         os.path.join(self.ckpt_dir, f"step_{global_step}.pt"),
                         global_step, loss_val)
                     self._cleanup_old_checkpoints()
-                    if loss_val < self.best_loss:
-                        self.best_loss = loss_val
-                        self.save_checkpoint(
-                            os.path.join(self.ckpt_dir, "best.pt"),
-                            global_step, loss_val)
+
+                if loss_val < self.best_loss:
+                    self.best_loss = loss_val
+                    self.save_checkpoint(
+                        os.path.join(self.ckpt_dir, "best.pt"),
+                        global_step, loss_val)
 
             val_loss = self.evaluate(val_loader, step=global_step)
             self.writer.add_scalar("loss/eval", val_loss*10, global_step)
