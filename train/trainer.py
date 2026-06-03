@@ -74,7 +74,6 @@ class Trainer:
         self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
         self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
-        self.scaler = torch.cuda.amp.GradScaler()
 
     def _set_gamma(self, step):
         '''计算当前步数的 gamma 并设到模型的 GRL 上。'''
@@ -145,41 +144,33 @@ class Trainer:
         return info
 
     def train_step(self, batch):
-        '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数（AMP 混合精度）。'''
+        '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数（全 fp32）。'''
         self.model.train()
         self.optimizer.zero_grad()
-        with torch.cuda.amp.autocast():
-            loss, aux = self._compute_loss(batch)
-        self.scaler.scale(loss).backward()
-        # 一律先 unscale（保证梯度数值准确用于监控）
-        self.scaler.unscale_(self.optimizer)
+        loss, aux = self._compute_loss(batch)
+        loss.backward()
+
+        # 安全性检查：检测 inf/nan 梯度，跳过本步
+        skip_step = False
+        for p in self.model.parameters():
+            if p.grad is not None and (torch.isinf(p.grad).any() or torch.isnan(p.grad).any()):
+                skip_step = True
+                break
+        if skip_step:
+            self.optimizer.zero_grad()
+            return loss.item(), aux, float('inf')
+
         # rev 分支单独裁剪
         if hasattr(self.model, 'mlp_rev') and self.rev_grad_max_norm > 0:
             nn.utils.clip_grad_norm_(self.model.mlp_rev.parameters(), self.rev_grad_max_norm)
-        # 精细裁剪：按模块独立限制更新幅度（0 = 不裁剪）
-        module_clip = [
-            ('encoder', self.max_encoder_gnorm),
-            ('decoder', self.max_decoder_gnorm),
-            ('slot_attention', self.max_slot_attention_gnorm),
-        ]
-        for name, max_norm in module_clip:
-            if max_norm > 0:
-                mod = getattr(self.model, name, None)
-                if mod is not None:
-                    nn.utils.clip_grad_norm_(mod.parameters(), max_norm)
-        # 子模块梯度监控（在全局 clip 之前）
-        aux.update(self._compute_grad_norms())
-        # 全局裁剪（返回 pre-clip norm，实际梯度已被 clip 到 max_grad_norm）
+        # 全局裁剪
         if self.max_grad_norm > 0:
             grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-            # post-clip 范数（真正生效的更新幅度）
-            post_gn = sum(p.grad.norm().item()**2 for p in self.model.parameters() if p.grad is not None)
-            aux['grad_post_clip'] = post_gn**0.5 if post_gn > 0 else 0.0
         else:
             grad_norm = 0.0
-            aux['grad_post_clip'] = 0.0
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # 子模块梯度监控（在全局 clip 之后，确保 ‖g‖² ≤ max_grad_norm²）
+        aux.update(self._compute_grad_norms())
+        self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()
         return loss.item(), aux, grad_norm
@@ -268,13 +259,12 @@ class Trainer:
             ckpts = ckpts[1:]
 
     def save_checkpoint(self, path, step, loss):
-        '''保存完整存档（model + optimizer + scheduler + scaler）。'''
+        '''保存完整存档（model + optimizer + scheduler）。'''
         torch.save({
             "step": step,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
-            "scaler": self.scaler.state_dict(),
             "loss": loss,
         }, path)
 
@@ -285,8 +275,6 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler and ckpt.get("scheduler"):
             self.scheduler.load_state_dict(ckpt["scheduler"])
-        if ckpt.get("scaler"):
-            self.scaler.load_state_dict(ckpt["scaler"])
         return ckpt.get("step", 0), ckpt.get("loss", float("inf"))
 
     def train(self, train_loader, val_loader, num_steps, start_step=0):
@@ -332,7 +320,7 @@ class Trainer:
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
 
                     # 监控指标日志（梯度 + slot 统计）
-                    monitor_keys = ['grad_post_clip', 'grad/encoder', 'grad/decoder',
+                    monitor_keys = ['grad/encoder', 'grad/decoder',
                                     'grad/slot_attention', 'grad/slotpi', 'grad/mlp_rev',
                                     'slot_var_across']
                     for k in monitor_keys:
