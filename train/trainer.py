@@ -70,6 +70,10 @@ class Trainer:
         self.lambda_recon_burnin = getattr(config, 'lambda_recon_burnin', 1.0)
         self.lambda_recon_rollout = getattr(config, 'lambda_recon_rollout', 1.0)
         self.rev_grad_max_norm = getattr(config, 'rev_grad_max_norm', 5.0)
+        # 精细梯度裁剪（每模块单独 max_norm，0 = 不裁剪）
+        self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
+        self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
+        self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
         self.scaler = torch.cuda.amp.GradScaler()
 
     def _set_gamma(self, step):
@@ -118,11 +122,27 @@ class Trainer:
             S_c=out.get("S_c"),
             energy=out.get("energy_pairs"))
 
+        # slot 监控指标
+        with torch.no_grad():
+            # slot 间方差（趋于 0 表示所有 slot 趋同 → 坍缩前兆）
+            aux['slot_var_across'] = all_slots.var(dim=2, unbiased=False).mean().item()
+
         # 总损失 = 重建 + slot 预测 + 静态正则 + GRL 反向
         total_loss = recon_loss + slot_pred_loss
         aux['recon_burnin'] = recon_burnin.item()
         aux['recon_rollout'] = recon_rollout.item()
         return total_loss, aux
+
+    def _compute_grad_norms(self):
+        '''计算各子模块梯度范数（需 unscale 后、global clip 前调用）。'''
+        info = {}
+        for name in ['encoder', 'decoder', 'slot_attention', 'slotpi', 'mlp_rev']:
+            mod = getattr(self.model, name, None)
+            if mod is None:
+                continue
+            gn = sum(p.grad.norm().item()**2 for p in mod.parameters() if p.grad is not None)
+            info[f'grad/{name}'] = gn**0.5 if gn > 0 else 0.0
+        return info
 
     def train_step(self, batch):
         '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数（AMP 混合精度）。'''
@@ -131,15 +151,33 @@ class Trainer:
         with torch.cuda.amp.autocast():
             loss, aux = self._compute_loss(batch)
         self.scaler.scale(loss).backward()
-        # 对 rev 分支单独做梯度裁剪（防止 L_rev 过大破坏编码器）
+        # 一律先 unscale（保证梯度数值准确用于监控）
+        self.scaler.unscale_(self.optimizer)
+        # rev 分支单独裁剪
         if hasattr(self.model, 'mlp_rev') and self.rev_grad_max_norm > 0:
-            self.scaler.unscale_(self.optimizer)
             nn.utils.clip_grad_norm_(self.model.mlp_rev.parameters(), self.rev_grad_max_norm)
-        # 全局梯度裁剪
+        # 精细裁剪：按模块独立限制更新幅度（0 = 不裁剪）
+        module_clip = [
+            ('encoder', self.max_encoder_gnorm),
+            ('decoder', self.max_decoder_gnorm),
+            ('slot_attention', self.max_slot_attention_gnorm),
+        ]
+        for name, max_norm in module_clip:
+            if max_norm > 0:
+                mod = getattr(self.model, name, None)
+                if mod is not None:
+                    nn.utils.clip_grad_norm_(mod.parameters(), max_norm)
+        # 子模块梯度监控（在全局 clip 之前）
+        aux.update(self._compute_grad_norms())
+        # 全局裁剪（返回 pre-clip norm，实际梯度已被 clip 到 max_grad_norm）
         if self.max_grad_norm > 0:
             grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+            # post-clip 范数（真正生效的更新幅度）
+            post_gn = sum(p.grad.norm().item()**2 for p in self.model.parameters() if p.grad is not None)
+            aux['grad_post_clip'] = post_gn**0.5 if post_gn > 0 else 0.0
         else:
             grad_norm = 0.0
+            aux['grad_post_clip'] = 0.0
         self.scaler.step(self.optimizer)
         self.scaler.update()
         if self.scheduler is not None:
@@ -293,8 +331,16 @@ class Trainer:
                     self.writer.add_scalar("rev_weight", gamma, global_step)
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
 
+                    # 监控指标日志（梯度 + slot 统计）
+                    monitor_keys = ['grad_post_clip', 'grad/encoder', 'grad/decoder',
+                                    'grad/slot_attention', 'grad/slotpi', 'grad/mlp_rev',
+                                    'slot_var_across']
+                    for k in monitor_keys:
+                        if k in aux:
+                            self.writer.add_scalar(k, aux[k], global_step)
+
                     # WandB
-                    self.wandb.log({
+                    log_dict = {
                         "loss/recon_burnin": aux['recon_burnin']*10,
                         "loss/recon_rollout": aux['recon_rollout']*10,
                         "loss/slot": aux['slot_loss']*10,
@@ -305,7 +351,11 @@ class Trainer:
                         "train/lr": lr,
                         "train/rev_weight": gamma,
                         "train/grad_norm": grad_norm,
-                    }, step=global_step)
+                    }
+                    for k in monitor_keys:
+                        if k in aux:
+                            log_dict[k] = aux[k]
+                    self.wandb.log(log_dict, step=global_step)
 
                 if global_step % self.save_every == 0:
                     self.save_checkpoint(

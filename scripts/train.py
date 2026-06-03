@@ -17,10 +17,13 @@ from train.trainer import WandBLogger
 from data import get_dataset
 
 
-def setup_cuda():
+def setup_cuda(seed=42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision('high')
+    return torch.Generator().manual_seed(seed)
 
 
 def load_wandb_config():
@@ -41,7 +44,7 @@ def main():
     os.dup2(log_fp.fileno(), sys.stdout.fileno())
     os.dup2(log_fp.fileno(), sys.stderr.fileno())
 
-    setup_cuda()
+    seed_gen = setup_cuda()
     parser = argparse.ArgumentParser(description='SlotPi Training')
     parser.add_argument('--config', type=str, required=True)
     parser.add_argument('--workdir', type=str, default='./experiments/default')
@@ -90,7 +93,8 @@ def main():
     ds = get_dataset(cfg.dataset, data_path=cfg.data_root,
                      num_frames=num_frames, stride=slide_stride)
     loader = ds.get_dataloader(batch_size=cfg.batch_size, shuffle=True,
-                               num_workers=getattr(cfg, 'num_workers', 4))
+                               num_workers=getattr(cfg, 'num_workers', 4),
+                               generator=seed_gen)
 
     start_step = 0
     if args.resume and os.path.isfile(args.resume):

@@ -43,13 +43,14 @@ class BaseVideoDataset(Dataset):
         """获取指定索引的视频数据，子类必须实现此方法"""
         raise NotImplementedError
 
-    def get_dataloader(self, batch_size=64, shuffle=True, num_workers=4):
+    def get_dataloader(self, batch_size=64, shuffle=True, num_workers=4, generator=None):
         """创建并返回一个 DataLoader 实例。
 
         Args:
             batch_size: 批大小，默认 64
             shuffle: 是否打乱数据，默认 True
             num_workers: 数据加载的工作进程数，默认 4
+            generator: 用于可复现 shuffling 的 torch.Generator
 
         Returns:
             DataLoader: 配置好的 DataLoader 对象
@@ -57,4 +58,5 @@ class BaseVideoDataset(Dataset):
         return DataLoader(
             self, batch_size=batch_size, shuffle=shuffle,
             num_workers=num_workers, pin_memory=True, drop_last=True,
+            generator=generator,
         )
