@@ -38,26 +38,26 @@ delta_t: 0.125
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
-# 训练
+# 训练（每 32 batchsize 需 10 GB 左右显存）
 num_steps: 200000
 batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
 max_grad_norm: 2.0
-burnin_frames: 6
-rollout_frames: 6
+burnin_frames: 8
+rollout_frames: 8
 
 # 学习率调度（warmup + cosine decay）
 warmup_steps: 3000
 
 # 损失权重
-lambda_slots: 0.5
+lambda_slots: 1.0
 lambda_images: 0.0
 lambda_energy: 0.01
-lambda_static: 0.1
+lambda_static: 0.0
 lambda_rev: 0.05
-lambda_recon_burnin: 10.0
-lambda_recon_rollout: 10.0
+lambda_recon_burnin: 0.0
+lambda_recon_rollout: 5.0
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
@@ -72,6 +72,9 @@ keep_last_checkpoints: 10
 workdir: "./experiments/clevrer"
 
 # 梯度分量裁剪，为 0 表示不开启，非特殊情况下不需要开启：
-max_encoder_gnorm: 0.0
-max_decoder_gnorm: 0.0
-max_slot_attention_gnorm: 0.0
+max_encoder_gnorm: 1.0
+max_decoder_gnorm: 0.3
+max_slot_attention_gnorm: 1.0
+
+# 冻结 slot 感知模块（True 时 encoder + slot_attention 不更新，仅训练 rollout 预测）
+freeze_slot: True

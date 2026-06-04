@@ -74,6 +74,15 @@ class Trainer:
         self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
         self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
+        # 冻结 slot 感知模块（训练 rollout 时保持 encoder + slot_attention 不动）
+        self.freeze_slot = getattr(config, 'freeze_slot', False)
+        if self.freeze_slot:
+            for name in ['encoder', 'slot_attention', 'decoder']:
+                mod = getattr(self.model, name, None)
+                if mod is not None:
+                    for p in mod.parameters():
+                        p.requires_grad_(False)
+            print(f"Frozen: encoder + slot_attention (rollout only)")
 
     def _set_gamma(self, step):
         '''计算当前步数的 gamma 并设到模型的 GRL 上。'''
@@ -163,6 +172,17 @@ class Trainer:
         # rev 分支单独裁剪
         if hasattr(self.model, 'mlp_rev') and self.rev_grad_max_norm > 0:
             nn.utils.clip_grad_norm_(self.model.mlp_rev.parameters(), self.rev_grad_max_norm)
+        # 精细裁剪：按模块独立限制更新幅度（0 = 不裁剪）
+        module_clip = [
+            ('encoder', self.max_encoder_gnorm),
+            ('decoder', self.max_decoder_gnorm),
+            ('slot_attention', self.max_slot_attention_gnorm),
+        ]
+        for name, max_norm in module_clip:
+            if max_norm > 0:
+                mod = getattr(self.model, name, None)
+                if mod is not None:
+                    nn.utils.clip_grad_norm_(mod.parameters(), max_norm)
         # 全局裁剪
         if self.max_grad_norm > 0:
             grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
@@ -283,6 +303,7 @@ class Trainer:
            slot_pred_loss 由 loss_fn 返回，内含 slot + static + rev 三项（均已加权）。
         '''
         global_step = start_step
+        epoch = 0
         pbar = tqdm(total=num_steps, initial=start_step, desc="Training")
 
         while global_step < num_steps:
@@ -357,11 +378,12 @@ class Trainer:
                         os.path.join(self.ckpt_dir, "best.pt"),
                         global_step, loss_val)
 
-            val_loss = self.evaluate(val_loader, step=global_step)
-            self.writer.add_scalar("loss/eval", val_loss*10, global_step)
-            self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
-            print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
-
+            epoch += 1
+            if epoch % 10 == 0:
+                val_loss = self.evaluate(val_loader, step=global_step)
+                self.writer.add_scalar("loss/eval", val_loss*10, global_step)
+                self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
+                print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
         pbar.close()
         self.writer.close()
         self.wandb.finish()
