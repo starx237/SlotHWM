@@ -67,6 +67,7 @@ rev_grad_max_norm: 2.0
 
 # 日志与存档
 log_every: 1
+eval_every_epochs: 10
 save_every: 1000
 keep_last_checkpoints: 10
 workdir: "./experiments/clevrer"

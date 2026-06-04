@@ -76,6 +76,7 @@ class Trainer:
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
         # 冻结 slot 感知模块（训练 rollout 时保持 encoder + slot_attention 不动）
         self.freeze_slot = getattr(config, 'freeze_slot', False)
+        self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
         if self.freeze_slot:
             for name in ['encoder', 'slot_attention', 'decoder']:
                 mod = getattr(self.model, name, None)
@@ -379,7 +380,7 @@ class Trainer:
                         global_step, loss_val)
 
             epoch += 1
-            if epoch % 10 == 0:
+            if epoch % self.eval_every_epochs == 0:
                 val_loss = self.evaluate(val_loader, step=global_step)
                 self.writer.add_scalar("loss/eval", val_loss*10, global_step)
                 self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
