@@ -34,12 +34,13 @@ class SlotPiModel(nn.Module):
         self.num_slots = getattr(config, 'num_slots', 7)
         self.buffer_len = getattr(config, 'buffer_len', 10)
 
-        # === C 上下文计算模块：从静态特征序列中提取上下文 C ===
-        self.C_attn = GeneralizedDotProductAttention()
-        self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
-        self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
-        self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
-        self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
+        # 第二次修改：C_t = S^c_t，不再从 burnin 序列计算全局 C
+        # 原先的 C 上下文计算模块：
+        # self.C_attn = GeneralizedDotProductAttention()
+        # self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
+        # self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
+        # self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
+        # self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
 
         # === 物理模块：基于哈密顿力学 ===
         self.physics_module = Slot_HamiltonianNet(
@@ -85,35 +86,33 @@ class SlotPiModel(nn.Module):
 
     def compute_C(self, burnin_slots):
         '''
-        从 burn-in 阶段的静态特征序列计算 C。
-        Args:
-            burnin_slots: (B, T_burn, N, D) burn-in 阶段的所有 slots, D = static_dim + dynamic_dim
-        Returns:
-            C: (B, N, D') 静态上下文，D' = static_dim
+        第二次修改：C_t = S^c_t，此方法不再使用。
+        原先从 burnin 序列计算全局 C 的代码已被注释保留。
         '''
-        B, T, N, D = burnin_slots.shape
-        D_sta = self.static_dim
-        sta = burnin_slots[:, :, :, :D_sta]  # (B, T, N, D')
-
-        # 注入时间位置编码（S^c 只需注入时间位置编码，无需注入空间位置编码）
-        pos_freq = 1.0 / (10000.0 ** (torch.arange(0, D_sta, 2, device=burnin_slots.device).float() / D_sta))
-        pos_t = torch.arange(T, device=burnin_slots.device).float().unsqueeze(1)
-        pos_enc = torch.zeros(T, D_sta, device=burnin_slots.device)
-        pos_enc[:, 0::2] = torch.sin(pos_t * pos_freq)
-        pos_enc[:, 1::2] = torch.cos(pos_t * pos_freq)
-        pos_enc = pos_enc[None, :, None, :]  # (1, T, 1, D')
-        sta = sta + pos_enc
-
-        # 在时间维度上做自注意力，得到聚合的上下文 C
-        sta_flat = sta.reshape(B * N, T, D_sta)  # (B*N, T, D')
-        q = self.dense_cq(sta_flat).view(B * N, T, self.num_heads, -1)
-        k = self.dense_ck(sta_flat).view(B * N, T, self.num_heads, -1)
-        v = self.dense_cv(sta_flat).view(B * N, T, self.num_heads, -1)
-        # 用最后一个时间步作为 query（更稳定，因为 burnin 结束时信息最丰富）
-        attn_out, _ = self.C_attn(q[:, -1:], k, v)  # (B*N, 1, H, Dh)
-        attn_out = attn_out.view(B, N, self.qkv_size)
-        C = self.dense_co(attn_out)  # (B, N, D')
-        return C
+        # 原始实现：
+        # B, T, N, D = burnin_slots.shape
+        # D_sta = self.static_dim
+        # sta = burnin_slots[:, :, :, :D_sta]  # (B, T, N, D')
+        #
+        # # 注入时间位置编码
+        # pos_freq = 1.0 / (10000.0 ** (torch.arange(0, D_sta, 2, device=burnin_slots.device).float() / D_sta))
+        # pos_t = torch.arange(T, device=burnin_slots.device).float().unsqueeze(1)
+        # pos_enc = torch.zeros(T, D_sta, device=burnin_slots.device)
+        # pos_enc[:, 0::2] = torch.sin(pos_t * pos_freq)
+        # pos_enc[:, 1::2] = torch.cos(pos_t * pos_freq)
+        # pos_enc = pos_enc[None, :, None, :]  # (1, T, 1, D')
+        # sta = sta + pos_enc
+        #
+        # # 在时间维度上做自注意力，得到聚合的上下文 C
+        # sta_flat = sta.reshape(B * N, T, D_sta)  # (B*N, T, D')
+        # q = self.dense_cq(sta_flat).view(B * N, T, self.num_heads, -1)
+        # k = self.dense_ck(sta_flat).view(B * N, T, self.num_heads, -1)
+        # v = self.dense_cv(sta_flat).view(B * N, T, self.num_heads, -1)
+        # attn_out, _ = self.C_attn(q[:, -1:], k, v)  # (B*N, 1, H, Dh)
+        # attn_out = attn_out.view(B, N, self.qkv_size)
+        # C = self.dense_co(attn_out)  # (B, N, D')
+        # return C
+        return burnin_slots[:, -1, :, :self.static_dim]
 
     def forward(self, slots, buffer, C: Optional[torch.Tensor] = None, return_energy=False):
         '''
@@ -130,8 +129,10 @@ class SlotPiModel(nn.Module):
         D_sta = self.static_dim
         D_dyn = self.dynamic_dim
 
+        # 第二次修改：C_t = S^c_t，若未传入则取当前 slot 的静态部分
+        # 原先：C = self.compute_C(buffer)
         if C is None:
-            C = self.compute_C(buffer)
+            C = slots[:, :, :D_sta]
 
         # ============ 物理模块 ============
         slots_dyn = slots[:, :, D_sta:]  # (B, N, dynamic_dim)

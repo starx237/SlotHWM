@@ -67,6 +67,9 @@ rev_mlp_hidden: 128
 # GRL 反向传播梯度裁剪
 rev_grad_max_norm: 5.0
 
+# JEPA target network 动量更新率（0 = 禁用）
+jepa_alpha: 0.996
+
 # 日志与存档
 log_every: 10
 save_every: 5000

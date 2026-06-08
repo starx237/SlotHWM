@@ -38,11 +38,12 @@ class SlotPiLoss(nn.Module):
             losses = [F.mse_loss(e[0], e[1]) for e in energy]
             energy_loss = sum(losses) / len(losses)
 
-        # ---- 静态特征方差正则 L_LC（idea.md §3） ----
+        # ---- 静态特征方差正则 L_LC（第二次修改：仅监控，梯度不传播） ----
         static_loss = torch.tensor(0.0, device=pred_slots.device)
         if slots_full_seq is not None and self.C_LC > 0:
             D_sta = getattr(self.config, 'static_dim', slots_full_seq.shape[-1] // 2)
-            static_features = slots_full_seq[..., :D_sta]
+            # 原先：static_features = slots_full_seq[..., :D_sta]
+            static_features = slots_full_seq[..., :D_sta].detach()
             variance = static_features.var(dim=1, unbiased=False)
             s2_m = variance.mean(dim=-1)
             N = slots_full_seq.shape[2]

@@ -21,7 +21,7 @@ slot_iters: 4
 
 # 解码器
 decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [32, 32]
+broadcast_size: [16, 16]
 
 # 物理模块
 hidden_dim: 256
@@ -44,19 +44,19 @@ batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
 max_grad_norm: 2.0
-burnin_frames: 8
-rollout_frames: 8
+burnin_frames: 4
+rollout_frames: 4
 
 # 学习率调度（warmup + cosine decay）
-warmup_steps: 3000
+warmup_steps: 5000
 
 # 损失权重
-lambda_slots: 1.0
+lambda_slots: 0.01
 lambda_images: 0.0
 lambda_energy: 0.01
 lambda_static: 0.0
-lambda_rev: 0.05
-lambda_recon_burnin: 0.0
+lambda_rev: 0.01
+lambda_recon_burnin: 15.0
 lambda_recon_rollout: 5.0
 gamma_max: 0.0
 c_gamma: 10.0
@@ -67,15 +67,18 @@ rev_grad_max_norm: 2.0
 
 # 日志与存档
 log_every: 1
-eval_every_epochs: 10
+eval_every_epochs: 2
 save_every: 1000
 keep_last_checkpoints: 10
 workdir: "./experiments/clevrer"
 
 # 梯度分量裁剪，为 0 表示不开启，非特殊情况下不需要开启：
-max_encoder_gnorm: 1.0
-max_decoder_gnorm: 0.3
-max_slot_attention_gnorm: 1.0
+max_encoder_gnorm: 0.0
+max_decoder_gnorm: 0.0
+max_slot_attention_gnorm: 0.0
+
+# JEPA Alpha
+jepa_alpha: 0.996
 
 # 冻结 slot 感知模块（True 时 encoder + slot_attention 不更新，仅训练 rollout 预测）
-freeze_slot: True
+freeze_slot: False

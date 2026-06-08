@@ -1,3 +1,4 @@
+import copy
 import torch
 import torch.nn as nn
 from models.encoder import CNNEncoder, ResNetEncoder
@@ -63,6 +64,19 @@ class SlotPi(nn.Module):
 
         self.slotpi = SlotPiModel(config)
 
+        # === JEPA target encoder（动量式软更新） ===
+        self.jepa_alpha = getattr(config, 'jepa_alpha', 0.0)
+        if self.jepa_alpha > 0:
+            self.target_encoder = copy.deepcopy(self.encoder)
+            self.target_slot_attention = copy.deepcopy(self.slot_attention)
+            for p in self.target_encoder.parameters():
+                p.requires_grad_(False)
+            for p in self.target_slot_attention.parameters():
+                p.requires_grad_(False)
+        else:
+            self.target_encoder = None
+            self.target_slot_attention = None
+
         # GRL + 反向预测器（idea.md §4）
         self.grl = GradientReversal()
         # 单层 Linear 确保 MLP_rev 无法轻易拟合同源映射，让 GRL 能真正起作用
@@ -71,6 +85,8 @@ class SlotPi(nn.Module):
         if hasattr(torch, 'compile'):
             self.decoder = torch.compile(self.decoder)
             self.encoder = torch.compile(self.encoder)
+            if self.target_encoder is not None:
+                self.target_encoder = torch.compile(self.target_encoder)
 
     def _add_sd_pos_encoding(self, slots, attn, grid_sz):
         '''用注意力权重计算每个 slot 的空间位置，将 sin/cos 编码加到 S^d。'''
@@ -92,6 +108,16 @@ class SlotPi(nn.Module):
         out = slots.clone()
         out[:, :, D_sta:] = out[:, :, D_sta:] + pe
         return out
+
+    @torch.no_grad()
+    def update_target_network(self, alpha):
+        '''JEPA 动量更新：target = alpha * target + (1-alpha) * online。'''
+        if self.target_encoder is None:
+            return
+        for param, target_param in zip(self.encoder.parameters(), self.target_encoder.parameters()):
+            target_param.data.mul_(alpha).add_(param.data, alpha=1.0 - alpha)
+        for param, target_param in zip(self.slot_attention.parameters(), self.target_slot_attention.parameters()):
+            target_param.data.mul_(alpha).add_(param.data, alpha=1.0 - alpha)
 
     def forward(self, frames):
         '''端到端前向 (B, T, C, H, W) → 重建帧 + slots + C + rev_pred'''
@@ -120,16 +146,20 @@ class SlotPi(nn.Module):
             burnin_slots.append(slots)
             buffer = torch.cat([buffer[:, 1:], slots.unsqueeze(1)], dim=1)
 
-        # 计算静态上下文 C
+        # 第二次修改：C_t = S^c_t，不再全局计算 C
+        # 原先从 burnin 计算全局 C：
+        # burnin_slots = torch.stack(burnin_slots, dim=1)
+        # C = self.slotpi.compute_C(burnin_slots)
         burnin_slots = torch.stack(burnin_slots, dim=1)
-        C = self.slotpi.compute_C(burnin_slots)
 
         # Phase 3: Rollout — SlotPi 自回归预测未来 slots（同时计算能量对用于 L_energy）
         pred_slots_list = []
         energy_pairs = []
         cur_slots = slots
         for t in range(rollout):
-            out = self.slotpi(cur_slots, buffer, C=C, return_energy=True)
+            # 第二次修改：C_t = S^c_t，每个时间步取当前 slot 的静态部分
+            C_t = cur_slots[:, :, :static_dim]
+            out = self.slotpi(cur_slots, buffer, C=C_t, return_energy=True)
             next_slots, ep = out if isinstance(out, tuple) else (out, None)
             pred_slots_list.append(next_slots)
             if ep is not None:
@@ -138,13 +168,31 @@ class SlotPi(nn.Module):
             cur_slots = next_slots
         pred_slots = torch.stack(pred_slots_list, dim=1)
 
-        # Phase 4: 从 GT rollout 帧提取 target slots（无梯度，仅用于 slot_pred_loss）
+        # Phase 4: 从 GT rollout 帧提取 target slots（JEPA target_encoder）
+        # 原先直接用 encoder：
+        # with torch.no_grad():
+        #     target_slots_list = []
+        #     s = burnin_slots[:, -1]
+        #     for t in range(burnin, burnin + rollout):
+        #         feat_t = enc_features[:, t]
+        #         s, attn = self.slot_attention(feat_t, s)
+        #         s = self._add_sd_pos_encoding(s, attn, grid_sz)
+        #         target_slots_list.append(s)
+        #     target_slots = torch.stack(target_slots_list, dim=1)
         with torch.no_grad():
+            if self.target_encoder is not None:
+                t_enc_features = self.target_encoder(frames[:, burnin:burnin + rollout])
+                t_slot_attn = self.target_slot_attention
+                frame_offset = burnin
+            else:
+                t_enc_features = enc_features
+                t_slot_attn = self.slot_attention
+                frame_offset = 0
             target_slots_list = []
             s = burnin_slots[:, -1]
             for t in range(burnin, burnin + rollout):
-                feat_t = enc_features[:, t]
-                s, attn = self.slot_attention(feat_t, s)
+                feat_t = t_enc_features[:, t - frame_offset]
+                s, attn = t_slot_attn(feat_t, s)
                 s = self._add_sd_pos_encoding(s, attn, grid_sz)
                 target_slots_list.append(s)
             target_slots = torch.stack(target_slots_list, dim=1)
@@ -172,7 +220,7 @@ class SlotPi(nn.Module):
                 "predicted": pred_slots,
                 "target": target_slots,
             },
-            "C": C,
+            # "C": C,  # 第二次修改：C_t = S^c_t，不再返回全局 C
             "rev_pred": rev_pred,
             "S_c": S_c,
             "energy_pairs": energy_pairs if energy_pairs else None,

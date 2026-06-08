@@ -24,7 +24,7 @@ class FrameEncoder(nn.Module):
         '''
         B, T, C, H, W = frames.shape
         # 将时空维度合并，以便一次性通过 backbone
-        frames = frames.view(B * T, C, H, W)
+        frames = frames.reshape(B * T, C, H, W)
         features = self.backbone(frames)
         if self.reduction == "flatten":
             # 展平空间维度并转置为 (B*T, N, D)

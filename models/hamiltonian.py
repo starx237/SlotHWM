@@ -482,11 +482,8 @@ class HamiltonianNet(nn.Module):
             weight_init=weight_init,
         )
 
-        # 交互能网络：自注意力 SelfAtt_I(Q_t; C) + Linear_I
-        self.interact_attn = GeneralizedDotProductAttention()
-        self.dense_iq = nn.Linear(embed_dim, qkv_size)    # Q 投影 (dynamic_dim → qkv)
-        self.dense_ik = nn.Linear(static_dim, qkv_size)   # C 投影为 Key (static_dim → qkv)
-        self.dense_iv = nn.Linear(static_dim, qkv_size)   # C 投影为 Value (static_dim → qkv)
+        # 交互能使用 Concat(Q_t, C_t) 作为自注意力输入
+        self.dense_i_concat = nn.Linear(embed_dim + static_dim, qkv_size)  # Concat(Q, C) → qkv
         self.dense_io = nn.Linear(qkv_size, 1)
 
     def forward(self, q: Array, p: Array, C: Array) -> Array:
@@ -508,16 +505,14 @@ class HamiltonianNet(nn.Module):
         potential = self.potential_net(potential_input).squeeze(-1)  # (B, N)
         potential = potential.sum(dim=1)  # (B,)
 
-        # 交互能项：自注意力 SelfAtt_I(Q_t; C) — 自掩码，不计算自己和自己的交互能
+        # 交互能使用 Concat(Q_t, C_t) 作为自注意力输入
         B, N, D = q.shape
-        # 将 Q 和 C 投影到注意力空间
-        q_proj = self.dense_iq(q)  # (B, N, Q)
-        k_proj = self.dense_ik(C)  # (B, N, Q)
-        v_proj = self.dense_iv(C)  # (B, N, Q)
+        combined = torch.cat([q, C], dim=-1)  # (B, N, embed_dim + static_dim)
+        proj = self.dense_i_concat(combined)  # (B, N, qkv_size)
 
         # 计算原始注意力分数（未经过 softmax）
-        attn_logits = torch.einsum("bqd,bkd->bqk", q_proj, k_proj)  # (B, N, N)
-        attn_logits = attn_logits * (q_proj.shape[-1] ** -0.5)
+        attn_logits = torch.einsum("bqd,bkd->bqk", proj, proj)  # (B, N, N)
+        attn_logits = attn_logits * (proj.shape[-1] ** -0.5)
 
         # 自掩码：在对角线位置设为 -inf，使得 softmax 后为 0（不计算自己与自己的交互）
         diag_mask = torch.eye(N, device=q.device, dtype=torch.bool)
@@ -527,7 +522,7 @@ class HamiltonianNet(nn.Module):
         attn_weights = F.softmax(attn_logits, dim=-1)
 
         # 加权的值求和，得到每个物体的交互贡献 SI_t
-        interaction = torch.einsum("bqk,bkd->bqd", attn_weights, v_proj)  # (B, N, Q)
+        interaction = torch.einsum("bqk,bkd->bqd", attn_weights, proj)  # (B, N, Q)
         interaction = self.dense_io(interaction).squeeze(-1)  # (B, N)
         # 按 idea.md §1："对于一个物体对，两个物体分别贡献一半交互能"
         # 然后整体的 I_t = Sum(SI_t)

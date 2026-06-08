@@ -74,7 +74,7 @@ class Trainer:
         self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
         self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
-        # 冻结 slot 感知模块（训练 rollout 时保持 encoder + slot_attention 不动）
+        # 冻结 slot 感知模块（训练 rollout 时可选保持 encoder + slot_attention 不动）
         self.freeze_slot = getattr(config, 'freeze_slot', False)
         self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
         if self.freeze_slot:
@@ -192,6 +192,10 @@ class Trainer:
         # 子模块梯度监控（在全局 clip 之后，确保 ‖g‖² ≤ max_grad_norm²）
         aux.update(self._compute_grad_norms())
         self.optimizer.step()
+        # JEPA target network EMA update
+        jepa_alpha = getattr(self.config, 'jepa_alpha', 0.0)
+        if jepa_alpha > 0 and hasattr(self.model, 'update_target_network'):
+            self.model.update_target_network(jepa_alpha)
         if self.scheduler is not None:
             self.scheduler.step()
         return loss.item(), aux, grad_norm
