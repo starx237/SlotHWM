@@ -25,7 +25,7 @@ class Readout(nn.Module):
 class MLP(nn.Module):
     '''多层感知机，支持指定隐藏层数量和可选的输出激活函数（Softplus）'''
     def __init__(self, input_size, hidden_size, output_size, num_hidden_layers=1, activate_output=False,
-                 weight_init=None, activation_fn=nn.ReLU):
+                 weight_init=None, activation_fn=nn.SiLU):
         super().__init__()
         layers = []
         prev_size = input_size
@@ -42,9 +42,9 @@ class MLP(nn.Module):
         self.apply(self._init_weights)  # 使用 Xavier 均匀初始化
 
     def _init_weights(self, module):
-        '''Xavier 均匀初始化权重，偏置置零'''
+        '''Kaiming 均匀初始化权重（适配 SiLU/ReLU），偏置置零'''
         if isinstance(module, nn.Linear):
-            torch.nn.init.xavier_uniform_(module.weight)
+            torch.nn.init.kaiming_uniform_(module.weight, mode='fan_in', nonlinearity='leaky_relu')
             if module.bias is not None:
                 module.bias.data.fill_(0.0)
 
@@ -91,6 +91,91 @@ class GradientReversal(nn.Module):
 
     def forward(self, x):
         return GRLFunction.apply(x, self.gamma)
+
+
+class AffineCoupling(nn.Module):
+    '''
+    交替仿射耦合层（可逆变换），用于实现 f_θ_Z。
+    4 层交替，按 static_dim / dynamic_dim 拆分而不是对半。
+    层 1,3：固定 S^c（静态部分），变换 S^d（动态部分）
+    层 2,4：固定 S^d（动态部分），变换 S^c（静态部分）
+    可作为替换元件使用。
+    '''
+    def __init__(self, static_dim: int, dynamic_dim: int, hidden_dim: int = 256):
+        super().__init__()
+        self.static_dim = static_dim
+        self.dynamic_dim = dynamic_dim
+        h = hidden_dim // 2  # s/t MLPs 使用一半 hidden dim
+
+        # 层 1,3：固定 x1（静态），变换 x2（动态）
+        self.net_s1 = MLP(static_dim, h, dynamic_dim, num_hidden_layers=1)
+        self.net_t1 = MLP(static_dim, h, dynamic_dim, num_hidden_layers=1)
+        self.net_s3 = MLP(static_dim, h, dynamic_dim, num_hidden_layers=1)
+        self.net_t3 = MLP(static_dim, h, dynamic_dim, num_hidden_layers=1)
+        # 层 2,4：固定 x2（动态），变换 x1（静态）
+        self.net_s2 = MLP(dynamic_dim, h, static_dim, num_hidden_layers=1)
+        self.net_t2 = MLP(dynamic_dim, h, static_dim, num_hidden_layers=1)
+        self.net_s4 = MLP(dynamic_dim, h, static_dim, num_hidden_layers=1)
+        self.net_t4 = MLP(dynamic_dim, h, static_dim, num_hidden_layers=1)
+        # 输出层 zero init，使初始 s≈0, t≈0 → f_z ≈ identity
+        for net in [self.net_s1, self.net_t1, self.net_s3, self.net_t3,
+                    self.net_s2, self.net_t2, self.net_s4, self.net_t4]:
+            nn.init.zeros_(net.net[-1].weight)
+            nn.init.zeros_(net.net[-1].bias)
+
+    @staticmethod
+    def _bounded_s(s):
+        return torch.tanh(s)
+
+    def _layer1_fwd(self, x):
+        x1, x2 = x.split([self.static_dim, self.dynamic_dim], dim=-1)
+        s = self._bounded_s(self.net_s1(x1))
+        t = self.net_t1(x1)
+        return torch.cat([x1, x2 * torch.exp(s) + t], dim=-1)
+
+    def _layer1_inv(self, y):
+        y1, y2 = y.split([self.static_dim, self.dynamic_dim], dim=-1)
+        s = self._bounded_s(self.net_s1(y1))
+        t = self.net_t1(y1)
+        return torch.cat([y1, (y2 - t) * torch.exp(-s)], dim=-1)
+
+    def _layer2_fwd(self, x):
+        x1, x2 = x.split([self.static_dim, self.dynamic_dim], dim=-1)
+        s = self._bounded_s(self.net_s2(x2))
+        t = self.net_t2(x2)
+        return torch.cat([x1 * torch.exp(s) + t, x2], dim=-1)
+
+    def _layer2_inv(self, y):
+        y1, y2 = y.split([self.static_dim, self.dynamic_dim], dim=-1)
+        s = self._bounded_s(self.net_s2(y2))
+        t = self.net_t2(y2)
+        return torch.cat([(y1 - t) * torch.exp(-s), y2], dim=-1)
+
+    def _layer3_fwd(self, x):
+        return self._layer1_fwd(x)
+
+    def _layer3_inv(self, y):
+        return self._layer1_inv(y)
+
+    def _layer4_fwd(self, x):
+        return self._layer2_fwd(x)
+
+    def _layer4_inv(self, y):
+        return self._layer2_inv(y)
+
+    def forward(self, x):
+        x = self._layer1_fwd(x)
+        x = self._layer2_fwd(x)
+        x = self._layer3_fwd(x)
+        x = self._layer4_fwd(x)
+        return x
+
+    def inverse(self, y):
+        y = self._layer4_inv(y)
+        y = self._layer3_inv(y)
+        y = self._layer2_inv(y)
+        y = self._layer1_inv(y)
+        return y
 
 
 class PositionEmbedding(nn.Module):

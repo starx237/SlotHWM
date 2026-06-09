@@ -39,7 +39,7 @@ class WandBLogger:
 
 
 def compute_gamma(step, num_steps, gamma_max, c_gamma):
-    '''计算 GRL 的 gamma 系数，按 sigmoid 曲线从 0 渐升至 gamma_max（idea.md §4）。'''
+    '''计算 GRL 的 gamma 系数，按 sigmoid 曲线从 0 渐升至 gamma_max'''
     p = step / max(1, num_steps)
     return (2.0 / (1.0 + math.exp(-c_gamma * p)) - 1.0) * gamma_max
 
@@ -74,8 +74,10 @@ class Trainer:
         self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
         self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
-        # 冻结 slot 感知模块（训练 rollout 时可选保持 encoder + slot_attention 不动）
+        self.pretrain = getattr(config, 'pretrain', False)
         self.freeze_slot = getattr(config, 'freeze_slot', False)
+        self.jepa = getattr(config, 'jepa', False)
+        self.jepa_alpha = getattr(config, 'jepa_alpha', 0.996)
         self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
         if self.freeze_slot:
             for name in ['encoder', 'slot_attention', 'decoder']:
@@ -83,7 +85,10 @@ class Trainer:
                 if mod is not None:
                     for p in mod.parameters():
                         p.requires_grad_(False)
-            print(f"Frozen: encoder + slot_attention (rollout only)")
+            print(f"Frozen: encoder + slot_attention + decoder (STATM-SAVi)")
+        if self.pretrain:
+            self.rollout = 0
+            print(f"Pretrain mode: burnin={self.burnin}, no rollout")
 
     def _set_gamma(self, step):
         '''计算当前步数的 gamma 并设到模型的 GRL 上。'''
@@ -92,12 +97,23 @@ class Trainer:
             self.model.grl.set_gamma(gamma)
         return gamma
 
+    def _ema_update(self):
+        '''EMA 更新 target encoder + target slot_attention（JEPA 模式）。'''
+        if not self.jepa:
+            return
+        alpha = self.jepa_alpha
+        for online_name, target_name in [('encoder', 'target_encoder'), ('slot_attention', 'target_slot_attention')]:
+            online = getattr(self.model, online_name, None)
+            target = getattr(self.model, target_name, None)
+            if online is not None and target is not None:
+                for p_online, p_target in zip(online.parameters(), target.parameters()):
+                    p_target.data.mul_(alpha).add_(p_online.data, alpha=1 - alpha)
+
     def _compute_loss(self, batch):
-        '''计算单 batch 的损失。返回 total_loss = recon + slot_pred_loss。'''
+        '''计算单 batch 的损失。支持 pretrain、finetune、JEPA 三种模式。'''
         frames = batch["video"].to(self.device)
         out = self.model(frames)
 
-        # 解码器输出在 broadcast_size 低分辨率，上采样到原分辨率计算 loss
         dec_size = out["outputs"]["video_burnin"].shape[-1]
         target_size = frames.shape[-1]
         if dec_size != target_size:
@@ -107,22 +123,34 @@ class Trainer:
                 size=target_size, mode='bilinear'
             ).reshape(b, -1, 3, target_size, target_size)
             video_burnin = up(out["outputs"]["video_burnin"])
-            video_pred = up(out["outputs"]["video_pred"])
+            video_pred = up(out["outputs"]["video_pred"]) if out["outputs"]["video_pred"] is not None else None
         else:
             video_burnin = out["outputs"]["video_burnin"]
             video_pred = out["outputs"]["video_pred"]
 
         target_burnin = frames[:, :self.burnin]
-        target_rollout = frames[:, self.burnin:self.burnin + self.rollout]
+        target_rollout = frames[:, self.burnin:self.burnin + self.rollout] if self.rollout > 0 else None
 
         # 重建损失
         recon_burnin = self.lambda_recon_burnin * nn.functional.mse_loss(
             video_burnin, target_burnin)
+
+        if self.pretrain or self.rollout == 0:
+            recon_loss = recon_burnin
+            slot_pred_loss = torch.tensor(0.0, device=frames.device)
+            aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0}
+            with torch.no_grad():
+                aux['slot_var_across'] = out["slots"]["corrected"].var(dim=2, unbiased=False).mean().item()
+            aux['recon_burnin'] = recon_burnin.item()
+            aux['recon_rollout'] = 0.0
+            total_loss = recon_loss
+            return total_loss, aux
+
+        # Finetune / JEPA: 完整损失
         recon_rollout = self.lambda_recon_rollout * nn.functional.mse_loss(
             video_pred, target_rollout)
         recon_loss = recon_burnin + recon_rollout
 
-        # slot 预测损失（含 slot_loss + static_loss + rev_loss，由 loss_fn 统一返回）
         all_slots = torch.cat([out["slots"]["corrected"], out["slots"]["predicted"]], dim=1)
         slot_pred_loss, aux = self.loss_fn(
             out["slots"]["predicted"], out["slots"]["target"],
@@ -131,12 +159,9 @@ class Trainer:
             S_c=out.get("S_c"),
             energy=out.get("energy_pairs"))
 
-        # slot 监控指标
         with torch.no_grad():
-            # slot 间方差（趋于 0 表示所有 slot 趋同 → 坍缩前兆）
             aux['slot_var_across'] = all_slots.var(dim=2, unbiased=False).mean().item()
 
-        # 总损失 = 重建 + slot 预测 + 静态正则 + GRL 反向
         total_loss = recon_loss + slot_pred_loss
         aux['recon_burnin'] = recon_burnin.item()
         aux['recon_rollout'] = recon_rollout.item()
@@ -145,7 +170,7 @@ class Trainer:
     def _compute_grad_norms(self):
         '''计算各子模块梯度范数（需 unscale 后、global clip 前调用）。'''
         info = {}
-        for name in ['encoder', 'decoder', 'slot_attention', 'slotpi', 'mlp_rev']:
+        for name in ['encoder', 'decoder', 'slot_attention', 'slotpi', 'f_z', 'mlp_rev']:
             mod = getattr(self.model, name, None)
             if mod is None:
                 continue
@@ -192,10 +217,7 @@ class Trainer:
         # 子模块梯度监控（在全局 clip 之后，确保 ‖g‖² ≤ max_grad_norm²）
         aux.update(self._compute_grad_norms())
         self.optimizer.step()
-        # JEPA target network EMA update
-        jepa_alpha = getattr(self.config, 'jepa_alpha', 0.0)
-        if jepa_alpha > 0 and hasattr(self.model, 'update_target_network'):
-            self.model.update_target_network(jepa_alpha)
+        self._ema_update()
         if self.scheduler is not None:
             self.scheduler.step()
         return loss.item(), aux, grad_norm
@@ -212,8 +234,7 @@ class Trainer:
 
                 if _PIL_AVAIL and step is not None and len(viz_samples) < num_viz:
                     frames = batch["video"].to(self.device)
-                    with torch.enable_grad():
-                        out = self.model(frames)
+                    out = self.model(frames)
                     viz_samples.append((out, frames[0:1]))
 
         if _PIL_AVAIL and step is not None and viz_samples:
@@ -243,13 +264,12 @@ class Trainer:
                 return up.reshape(dec_tensor.shape[0], dec_tensor.shape[1], 3, target_size, target_size)
 
             dec_b = upscale(out["outputs"]["video_burnin"][:1])
-            dec_p = upscale(out["outputs"]["video_pred"][:1])
             gt_b = frames[:, :burnin]
-            gt_r = frames[:, burnin:burnin + rollout]
 
-            n_cols = max(burnin, rollout)
+            n_cols = max(burnin, rollout) if rollout > 0 else burnin
+            n_rows = 4 if rollout > 0 and out["outputs"]["video_pred"] is not None else 2
             S = min(80, 2000 // max(n_cols, 1))
-            canvas = Image.new('RGB', (n_cols * S, 4 * S), (255, 255, 255))
+            canvas = Image.new('RGB', (n_cols * S, n_rows * S), (255, 255, 255))
             draw = ImageDraw.Draw(canvas)
 
             def put(t, row, col):
@@ -261,11 +281,18 @@ class Trainer:
             for t in range(burnin):
                 put(gt_b[0, t], 0, t)
                 put(dec_b[0, t], 1, t)
-            for t in range(rollout):
-                put(gt_r[0, t], 2, t)
-                put(dec_p[0, t], 3, t)
 
-            for i, label in enumerate(['GT Burnin', 'Recon Burnin', 'GT Rollout', 'Pred Rollout']):
+            if rollout > 0 and out["outputs"]["video_pred"] is not None:
+                dec_p = upscale(out["outputs"]["video_pred"][:1])
+                gt_r = frames[:, burnin:burnin + rollout]
+                for t in range(rollout):
+                    put(gt_r[0, t], 2, t)
+                    put(dec_p[0, t], 3, t)
+                labels = ['GT Burnin', 'Recon Burnin', 'GT Rollout', 'Pred Rollout']
+            else:
+                labels = ['GT Burnin', 'Recon Burnin']
+
+            for i, label in enumerate(labels):
                 draw.text((2, i * S + 2), label, fill=(0, 0, 0))
 
             path = os.path.join(step_dir, f'sample_{idx}.png')
@@ -283,24 +310,94 @@ class Trainer:
             os.remove(ckpts[0])
             ckpts = ckpts[1:]
 
+    @staticmethod
+    def _match_and_load(model_state, ckpt_state):
+        '''鲁棒 key 匹配加载：自动处理 _orig_mod 前缀差异 + 形状不匹配。'''
+        def match(ck, mk):
+            return (ck == mk or
+                    ck.replace('_orig_mod.', '') == mk or
+                    ck == mk.replace('_orig_mod.', ''))
+        loaded = {}
+        ckpt_clean = {}
+        for k, v in ckpt_state.items():
+            ckpt_clean[k.replace('_orig_mod.', '')] = v
+        for ck_key, v in ckpt_state.items():
+            matched_mk = None
+            for mk_key in model_state:
+                if match(ck_key, mk_key) and v.shape == model_state[mk_key].shape:
+                    matched_mk = mk_key
+                    break
+            if matched_mk is not None:
+                loaded[matched_mk] = v
+        return loaded
+
     def save_checkpoint(self, path, step, loss):
-        '''保存完整存档（model + optimizer + scheduler）。'''
+        '''保存完整存档，自动去除 _orig_mod 前缀。'''
+        raw = self.model.state_dict()
+        clean = {k.replace('_orig_mod.', ''): v for k, v in raw.items()}
         torch.save({
             "step": step,
-            "model": self.model.state_dict(),
+            "model": clean,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
             "loss": loss,
         }, path)
 
     def load_checkpoint(self, path):
-        '''加载存档，返回 (step, loss)。'''
+        '''加载存档。自动跳过形状不匹配的 key，兼容架构变更后的续训。'''
         ckpt = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(ckpt["model"])
-        self.optimizer.load_state_dict(ckpt["optimizer"])
+        model_state = self.model.state_dict()
+        ckpt_state = ckpt["model"]
+
+        print("  CKPT keys (first 5):", list(ckpt_state.keys())[:5])
+        print("  Model keys (first 5):", list(model_state.keys())[:5])
+
+        filtered = self._match_and_load(model_state, ckpt_state)
+        skipped = len(ckpt_state) - len(filtered)
+        key_stats = {"encoder": 0, "slot_attention": 0, "decoder": 0, "other": 0}
+        for k in filtered:
+            for prefix in key_stats:
+                if k.startswith(prefix):
+                    key_stats[prefix] += 1
+                    break
+            else:
+                key_stats["other"] += 1
+
+        self.model.load_state_dict(filtered, strict=False)
+        if skipped or key_stats.get("other", 0) > 0:
+            print(f"Checkpoint load: {len(filtered)}/{len(ckpt_state)} keys loaded, {skipped} skipped")
+            print(f"  Loaded breakdown: encoder={key_stats['encoder']} slot_attn={key_stats['slot_attention']} decoder={key_stats['decoder']} other={key_stats['other']}")
+        try:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
+        except (ValueError, RuntimeError) as e:
+            print(f"Optimizer state incompatible (architecture change), reinitializing: {e}")
         if self.scheduler and ckpt.get("scheduler"):
-            self.scheduler.load_state_dict(ckpt["scheduler"])
+            try:
+                self.scheduler.load_state_dict(ckpt["scheduler"])
+            except (ValueError, RuntimeError) as e:
+                print(f"Scheduler state incompatible (architecture change), reinitializing: {e}")
         return ckpt.get("step", 0), ckpt.get("loss", float("inf"))
+
+    def load_pretrained(self, path):
+        '''仅加载 STATM-SAVi 预训练权重（encoder, slot_attention, decoder）。
+        忽略预测模块（f_z, slotpi, mlp_rev 等）的缺失/不匹配。'''
+        ckpt = torch.load(path, map_location=self.device)
+        model_state = self.model.state_dict()
+        ckpt_state = ckpt["model"]
+
+        loaded = self._match_and_load(model_state, ckpt_state)
+        skipped = {k: v.shape for k, v in ckpt_state.items()
+                   if not any(k.replace('_orig_mod.', '') == mk.replace('_orig_mod.', '')
+                              and v.shape == model_state[mk].shape for mk in model_state)}
+
+        self.model.load_state_dict(loaded, strict=False)
+
+        missing = set(model_state.keys()) - set(loaded.keys())
+        if missing:
+            print(f"Pretrain load — missing (initialized randomly): {len(missing)} keys")
+        if skipped:
+            print(f"Pretrain load — skipped (shape mismatch or not in model): {len(skipped)} keys")
+        return loaded, skipped
 
     def train(self, train_loader, val_loader, num_steps, start_step=0):
         '''完整训练循环。
@@ -325,6 +422,8 @@ class Trainer:
                     lr = self.optimizer.param_groups[0]['lr']
                     pbar.set_postfix({
                         "loss": f"{loss_val:.4f}",
+                        "recon_b": f"{aux['recon_burnin']:.4f}",
+                        "recon_r": f"{aux['recon_rollout']:.4f}",
                         "slot": f"{aux['slot_loss']:.4f}",
                         "static": f"{aux['static_loss']:.6f}",
                         "rev": f"{aux['rev_loss']:.6f}",

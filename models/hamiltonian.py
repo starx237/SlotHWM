@@ -435,7 +435,7 @@ class HamiltonianNet(nn.Module):
     '''
     哈密顿量网络，输入 q, p, C，输出标量能量 H。
     将能量分解为三项：
-      H = sum_i MLP_K(P_i, C) + sum_i MLP_V(Q_i, C) + sum(Linear_I(SelfAtt_I(Q_t; C)))
+      H = sum_i MLP_K(P_i, C_i) + sum_i MLP_V(Q_i, C_i) + sum(Linear_I(SelfAtt_I(Concat(Q_t|C_t))))
     其中第一项为动能，第二项为势能，第三项为物体间交互能（自掩码，不计算自交互）。
     '''
     def __init__(self,
@@ -462,24 +462,26 @@ class HamiltonianNet(nn.Module):
         self.weight_init = weight_init
         self.dropout_rate = dropout_rate
 
-        # 动能网络 MLP_K(P_i, C) — 输入为 [p, C] 的拼接 (embed_dim + static_dim)
+        # 动能网络 MLP_K(P_i, C) — 2 层隐藏层，hidden_dim//2，SiLU
         self.kinetic_net = MLP(
             input_size=embed_dim + static_dim,
-            hidden_size=mlp_size,
+            hidden_size=mlp_size // 2,
             output_size=1,
-            num_hidden_layers=1,
+            num_hidden_layers=2,
             activate_output=True,
             weight_init=weight_init,
+            activation_fn=nn.SiLU,
         )
 
-        # 势能网络 MLP_V(Q_i, C) — 输入为 [q, C] 的拼接 (embed_dim + static_dim)
+        # 势能网络 MLP_V(Q_i, C) — 2 层隐藏层，hidden_dim//2，Softplus
         self.potential_net = MLP(
             input_size=embed_dim + static_dim,
-            hidden_size=mlp_size,
+            hidden_size=mlp_size // 2,
             output_size=1,
-            num_hidden_layers=1,
+            num_hidden_layers=2,
             activate_output=True,
             weight_init=weight_init,
+            activation_fn=nn.Softplus,
         )
 
         # 交互能使用 Concat(Q_t, C_t) 作为自注意力输入
@@ -495,12 +497,12 @@ class HamiltonianNet(nn.Module):
         Returns:
             H: 总能量标量 (B,)
         '''
-        # 动能项：对每个物体 i，计算 MLP_K(P_i, C)，然后求和
+        # 动能项：对每个物体 i，计算 MLP_K(P_i, C_i)，然后求和
         kinetic_input = torch.cat([p, C], dim=-1)  # (B, N, 2*D)
         kinetic = self.kinetic_net(kinetic_input).squeeze(-1)  # (B, N)
         kinetic = kinetic.sum(dim=1)  # (B,)
 
-        # 势能项：对每个物体 i，计算 MLP_V(Q_i, C)，然后求和
+        # 势能项：对每个物体 i，计算 MLP_V(Q_i, C_i)，然后求和
         potential_input = torch.cat([q, C], dim=-1)  # (B, N, 2*D)
         potential = self.potential_net(potential_input).squeeze(-1)  # (B, N)
         potential = potential.sum(dim=1)  # (B,)
@@ -524,7 +526,7 @@ class HamiltonianNet(nn.Module):
         # 加权的值求和，得到每个物体的交互贡献 SI_t
         interaction = torch.einsum("bqk,bkd->bqd", attn_weights, proj)  # (B, N, Q)
         interaction = self.dense_io(interaction).squeeze(-1)  # (B, N)
-        # 按 idea.md §1："对于一个物体对，两个物体分别贡献一半交互能"
+        # 对于一个物体对，两个物体分别贡献一半交互能
         # 然后整体的 I_t = Sum(SI_t)
         interaction = interaction.sum(dim=1)  # (B,)
 

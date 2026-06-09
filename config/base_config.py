@@ -52,8 +52,8 @@ class SlotPiConfig:
     num_steps: int = 160000
     warmup_steps: int = 2500
 
-    # JEPA EMA update rate（0 = 禁用）
-    jepa_alpha: float = 0.0
+    # Pretrain / Finetune
+    pretrain: bool = False
 
     # Loss weights
     lambda_slots: float = 1.0

@@ -17,7 +17,6 @@ num_slots: 7
 static_dim: 32
 dynamic_dim: 96
 slot_hidden: 128
-slot_iters: 3
 
 # 解码器
 decoder_hidden: [64, 64, 64, 64]

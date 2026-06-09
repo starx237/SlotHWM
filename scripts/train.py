@@ -83,9 +83,11 @@ def main():
         print("WandB disabled")
 
     model = SlotPi(cfg)
-    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    total = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable parameters: {total:,} / {sum(p.numel() for p in model.parameters()):,}")
 
-    optimizer, scheduler = create_optimizer(model.parameters(), cfg)
+    optimizer, scheduler = create_optimizer(
+        (p for p in model.parameters() if p.requires_grad), cfg)
     trainer = Trainer(model, optimizer, scheduler, cfg, wandb_logger=wandb_logger)
 
     num_frames = getattr(cfg, 'num_frames', None) or (getattr(cfg, 'burnin_frames', 6) + getattr(cfg, 'rollout_frames', 10))
@@ -97,8 +99,21 @@ def main():
                                generator=seed_gen)
 
     start_step = 0
-    if args.resume and os.path.isfile(args.resume):
-        start_step, _ = trainer.load_checkpoint(args.resume)
+
+    # 加载预训练权重（仅 STATM-SAVi 部分：encoder, slot_attention, decoder）
+    pretrained_path = getattr(cfg, 'pretrained_path', None)
+    if pretrained_path and not getattr(cfg, 'pretrain', False):
+        if os.path.isfile(pretrained_path):
+            loaded, skipped = trainer.load_pretrained(pretrained_path)
+            print(f"Loaded pretrained: {len(loaded)} keys matched, {len(skipped)} skipped")
+
+    # Resume checkpoint（完整状态恢复）
+    resume_path = args.resume
+    if not resume_path:
+        if getattr(cfg, 'resume', False) and getattr(cfg, 'resume_step', 0) > 0:
+            resume_path = os.path.join(args.workdir, 'checkpoints', f'step_{cfg.resume_step}.pt')
+    if resume_path and os.path.isfile(resume_path):
+        start_step, _ = trainer.load_checkpoint(resume_path)
         print(f"Resumed from step {start_step}")
 
     trainer.train(loader, loader, cfg.num_steps, start_step=start_step)

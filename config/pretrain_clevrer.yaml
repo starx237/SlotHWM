@@ -1,0 +1,73 @@
+# SlotPi 预训练配置 — CLEVRER（仅 STATM-SAVi，无 rollout）
+dataset: "clevrer"
+data_root: "./data/clevrer"
+num_workers: 4
+
+pretrain: true
+
+# 编码器
+encoder_type: "cnn"
+in_channels: 3
+img_size: 128
+encoder_hidden: 64
+
+# Slot Attention
+num_slots: 7
+static_dim: 96
+dynamic_dim: 32
+slot_hidden: 128
+
+# 解码器
+decoder_hidden: [64, 64, 64, 64]
+broadcast_size: [8, 8]
+
+# 物理模块（预训练不启用，保留默认值）
+hidden_dim: 256
+num_heads: 4
+qkv_size: 128
+mlp_size: 256
+num_layers: 2
+h_layers: 1
+out_mlp: false
+out_hidden_layers: 1
+pre_norm: false
+dropout_rate: 0.1
+delta_t: 0.125
+integrator_method: "Euler"
+num_spatiotemporal_blocks: 2
+
+# 训练
+num_steps: 100000
+batch_size: 64
+learning_rate: 0.0002
+weight_decay: 0.0
+max_grad_norm: 0.05
+burnin_frames: 6
+rollout_frames: 0
+
+warmup_steps: 2500
+
+# 损失权重（预训练仅重建损失）
+lambda_slots: 0.0
+lambda_images: 0.0
+lambda_energy: 0.0
+lambda_static: 0.0
+lambda_rev: 0.0
+lambda_recon_burnin: 1.0
+lambda_recon_rollout: 0.0
+gamma_max: 0.0
+c_gamma: 10.0
+rev_mlp_hidden: 128
+
+rev_grad_max_norm: 0.05
+
+log_every: 1
+eval_every_epochs: 1
+save_every: 1000
+keep_last_checkpoints: 10
+workdir: "./pretrained/clevrer"
+
+
+# 断点续训
+resume: true
+resume_step: 52000

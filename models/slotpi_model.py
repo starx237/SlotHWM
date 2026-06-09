@@ -8,17 +8,6 @@ from models.misc import MLP
 
 
 class SlotPiModel(nn.Module):
-    '''
-    SlotPI（Slot Physics Integration）模型 - 新架构版本（idea.md 修正）。
-    将原始 slot 拆分为两部分：
-      S = [S^c || S^d]，其中 S^c 为静态特征 (first half)，S^d 为动态特征 (last half)。
-    - 动态特征 S^d → qp_Attentions → (Q, P) → HamiltonianNet(Q, P, C) → Integrator → (Q_next, P_next)
-    - 静态特征 S^c → SelfAtt_C → Linear_C → C（在 burn-in 阶段计算，rollout 阶段固定）
-    - 融合构建物理预测：slot_phys = [S^c || MLP_S(Q_next, C)]
-    - 时空推理 ST_{t+1} 修正完整 slot（包含静态和动态两部分）
-    - 最终预测：S_{t+1} = slot_phys + ST_{t+1}
-    - L_LC 损失约束 S^c 在时间维上的方差（静态特征应变化尽量小）
-    '''
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -75,13 +64,14 @@ class SlotPiModel(nn.Module):
             ) for _ in range(num_spatiotemporal_blocks)
         ])
 
-        # === MLP_S：融合 Q_next 和 C 生成新的动态特征 ===
+        # === MLP_S / MLP_Z：融合 Q_next 和 C 生成新的动态特征（2 层隐藏层，hidden_dim//2，SiLU）===
         self.fusion_mlp = MLP(
-            input_size=self.static_dim + self.dynamic_dim,  # [Q_next(DD), C(SD)] 拼接 = slot_dim
-            hidden_size=self.hidden_dim,
+            input_size=self.static_dim + self.dynamic_dim,
+            hidden_size=self.hidden_dim // 2,
             output_size=self.dynamic_dim,
-            num_hidden_layers=1,
+            num_hidden_layers=2,
             activate_output=True,
+            activation_fn=nn.SiLU,
         )
 
     def compute_C(self, burnin_slots):
@@ -114,30 +104,28 @@ class SlotPiModel(nn.Module):
         # return C
         return burnin_slots[:, -1, :, :self.static_dim]
 
-    def forward(self, slots, buffer, C: Optional[torch.Tensor] = None, return_energy=False):
+    def forward(self, z, z_buffer, C: Optional[torch.Tensor] = None, return_energy=False):
         '''
+        在 Z 空间做单步预测。
         Args:
-            slots: 当前时间步的 Slot (B, N, D)
-            buffer: 历史帧缓存 (B, T, N, D)
-            C: 静态上下文 (B, N, D')，如果为 None 则在 buffer 上即时计算
+            z: 当前时间步的 Z (B, N, D)，E2E 训练时就是 S
+            z_buffer: 历史 Z 缓存 (B, T, N, D)
+            C: 静态部分 Z^c (B, N, D')，默认从 z 切片
             return_energy: 是否返回哈密顿量能量
         Returns:
-            pred_slots_next: 预测的下一时间步 Slot (B, N, D)
-            如果 return_energy=True，额外返回 energy (B,)
+            pred_z_next: 预测的下一时间步 Z (B, N, D)
         '''
-        B, N, D = slots.shape
+        B, N, D = z.shape
         D_sta = self.static_dim
         D_dyn = self.dynamic_dim
 
-        # 第二次修改：C_t = S^c_t，若未传入则取当前 slot 的静态部分
-        # 原先：C = self.compute_C(buffer)
         if C is None:
-            C = slots[:, :, :D_sta]
+            C = z[:, :, :D_sta]
 
         # ============ 物理模块 ============
-        slots_dyn = slots[:, :, D_sta:]  # (B, N, dynamic_dim)
-        buffer_dyn = buffer[:, :, :, D_sta:]  # (B, T, N, dynamic_dim)
-        phys_out = self.physics_module(slots_dyn, buffer_dyn, C=C,
+        z_dyn = z[:, :, D_sta:]  # (B, N, dynamic_dim)
+        z_buffer_dyn = z_buffer[:, :, :, D_sta:]  # (B, T, N, dynamic_dim)
+        phys_out = self.physics_module(z_dyn, z_buffer_dyn, C=C,
                                         return_energy=return_energy)
         if return_energy:
             q_next, p_next, energy_pair = phys_out
@@ -145,34 +133,34 @@ class SlotPiModel(nn.Module):
             q_next, p_next = phys_out
             energy_pair = None
 
-        # 融合：MLP_S(Q_next, C) → S^d_next
-        fusion_input = torch.cat([q_next, C], dim=-1)  # (B, N, dynamic_dim + static_dim)
+        # 融合：MLP(Q_next, C) → Z^d_next
+        fusion_input = torch.cat([q_next, C], dim=-1)  # (B, N, static_dim + dynamic_dim)
         next_dyn = self.fusion_mlp(fusion_input)       # (B, N, dynamic_dim)
-        slot_phys = torch.cat([slots[:, :, :D_sta], next_dyn], dim=-1)  # (B, N, D)
+        z_phys = torch.cat([z[:, :, :D_sta], next_dyn], dim=-1)  # (B, N, D) = [Z^c | Z^d_hat]
 
-        # ============ 时空推理模块 ============
-        st_out = torch.zeros_like(slots)
+        # ============ 时空推理模块（纯增量修正） ============
+        st_out = torch.zeros_like(z)
         for block in self.spatiotemporal_module:
-            st_out = block(st_out, buffer)  # (B, N, D) — 纯增量修正量（无残差泄露）
+            st_out = block(st_out, z_buffer)
 
         # ============ 融合 ============
-        pred_slots_next = slot_phys + st_out  # (B, N, D)
+        pred_z_next = z_phys + st_out  # (B, N, D)
 
         if return_energy:
-            return pred_slots_next, energy_pair
-        return pred_slots_next
+            return pred_z_next, energy_pair
+        return pred_z_next
 
-    def predict_rollout(self, initial_slots, initial_buffer, C, rollout_steps):
-        '''自回归的 rollout 预测（多步预测）。'''
-        B, N, D = initial_slots.shape
-        buffer = initial_buffer
-        slots = initial_slots
+    def predict_rollout(self, initial_z, initial_z_buffer, C, rollout_steps):
+        '''自回归的 rollout 预测（Z 空间，多步）。'''
+        B, N, D = initial_z.shape
+        z_buffer = initial_z_buffer
+        z = initial_z
         predictions = []
 
         for _ in range(rollout_steps):
-            next_slots = self.forward(slots, buffer, C=C)
-            predictions.append(next_slots)
-            buffer = torch.cat([buffer[:, 1:], next_slots.unsqueeze(1)], dim=1)
-            slots = next_slots
+            next_z = self.forward(z, z_buffer, C=C)
+            predictions.append(next_z)
+            z_buffer = torch.cat([z_buffer[:, 1:], next_z.unsqueeze(1)], dim=1)
+            z = next_z
 
         return torch.stack(predictions, dim=1)
