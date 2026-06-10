@@ -203,7 +203,7 @@ class SlotAttention(nn.Module):
 
 class TimeSpaceTransformerBlock2(nn.Module):
     '''
-    时空 Transformer 块（论文中的 SOTA 方案）。
+    时空 Transformer 块（SOTA 方案）。
     同时进行空间注意力和时间注意力，然后相加融合，最后通过 MLP。
     '''
     def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False, dropout_rate=0.1):
@@ -232,7 +232,7 @@ class TimeSpaceTransformerBlock2(nn.Module):
         self.dense_kt = nn.Linear(embed_dim, qkv_size)
         self.dense_vt = nn.Linear(embed_dim, qkv_size)
 
-        # 输出投影
+        # 输出投影（空间和时间共享）
         self.dense_o = nn.Linear(qkv_size, embed_dim)
 
         # MLP

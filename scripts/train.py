@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models.slotpi import SlotPi
+from models.dynamics import SlotDynamicsModel
 from train import Trainer, create_optimizer
 from train.trainer import WandBLogger
 from data import get_dataset
@@ -82,7 +82,7 @@ def main():
     else:
         print("WandB disabled")
 
-    model = SlotPi(cfg)
+    model = SlotDynamicsModel(cfg)
     total = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Trainable parameters: {total:,} / {sum(p.numel() for p in model.parameters()):,}")
 

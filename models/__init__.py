@@ -1,5 +1,5 @@
-from .slotpi import SlotPi
-from .slotpi_model import SlotPiModel
+from .dynamics import SlotDynamicsModel
+from .predictor import SlotPredictor
 from .attention import SlotAttention
 from .encoder import CNNEncoder, ResNetEncoder
 from .decoder import SpatialBroadcastDecoder

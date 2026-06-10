@@ -14,7 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from dotenv import load_dotenv
 from data.clevrer_dataset import CLEVRERDataset
-from models.slotpi import SlotPi
+from models.dynamics import SlotDynamicsModel
 from train.trainer import Trainer, WandBLogger
 from train import create_optimizer
 
@@ -75,7 +75,7 @@ log(f'Input shape: {video.shape}, range=[{video.min():.4f}, {video.max():.4f}]')
 
 # ── Model ───────────────────────────────────────────────────────────────────
 torch.manual_seed(42)
-model = SlotPi(cfg)
+    model = SlotDynamicsModel(cfg)
 model.cuda()
 log(f'Parameters: {sum(p.numel() for p in model.parameters()):,}')
 

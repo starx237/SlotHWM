@@ -7,7 +7,7 @@ from models.misc import MLP
 
 
 
-class SlotPiModel(nn.Module):
+class SlotPredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config

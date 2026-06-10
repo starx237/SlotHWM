@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-from .losses import SlotPiLoss
+from .losses import SlotPiLoss, get_loss_ratios, get_rollout_frames
 
 try:
     from PIL import Image, ImageDraw
@@ -109,8 +109,10 @@ class Trainer:
                 for p_online, p_target in zip(online.parameters(), target.parameters()):
                     p_target.data.mul_(alpha).add_(p_online.data, alpha=1 - alpha)
 
-    def _compute_loss(self, batch):
-        '''计算单 batch 的损失。支持 pretrain、finetune、JEPA 三种模式。'''
+    def _compute_loss(self, batch, step=0):
+        '''计算单 batch 的损失。支持 pretrain、finetune、JEPA 三种模式。
+        aux 中所有 loss 值均为原始系数（不受 ratios 影响），用于监控。
+        返回的 total_loss 含 ratio 缩放，用于 backward。'''
         frames = batch["video"].to(self.device)
         out = self.model(frames)
 
@@ -128,49 +130,65 @@ class Trainer:
             video_burnin = out["outputs"]["video_burnin"]
             video_pred = out["outputs"]["video_pred"]
 
+        ratios = get_loss_ratios(step)
         target_burnin = frames[:, :self.burnin]
         target_rollout = frames[:, self.burnin:self.burnin + self.rollout] if self.rollout > 0 else None
 
-        # 重建损失
-        recon_burnin = self.lambda_recon_burnin * nn.functional.mse_loss(
+        # 重建损失（原始系数用于 aux，ratio 缩放用于梯度）
+        recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
             video_burnin, target_burnin)
+        recon_burnin_grad = recon_burnin_val * ratios["burnin"]
 
         if self.pretrain or self.rollout == 0:
-            recon_loss = recon_burnin
-            slot_pred_loss = torch.tensor(0.0, device=frames.device)
+            total_grad = recon_burnin_grad
             aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0}
             with torch.no_grad():
                 aux['slot_var_across'] = out["slots"]["corrected"].var(dim=2, unbiased=False).mean().item()
-            aux['recon_burnin'] = recon_burnin.item()
+            aux['recon_burnin'] = recon_burnin_val.item()
             aux['recon_rollout'] = 0.0
-            total_loss = recon_loss
-            return total_loss, aux
+            aux['total'] = recon_burnin_val.item()
+            aux['total_scaled'] = total_grad.item()
+            aux['rollout_actual'] = 0
+            return total_grad, aux
 
         # Finetune / JEPA: 完整损失
-        recon_rollout = self.lambda_recon_rollout * nn.functional.mse_loss(
-            video_pred, target_rollout)
-        recon_loss = recon_burnin + recon_rollout
+        current_rollout = get_rollout_frames(step, self.rollout)
+        r = min(current_rollout, self.rollout)
+        recon_rollout_val = self.lambda_recon_rollout * nn.functional.mse_loss(
+            video_pred[:, :r], target_rollout[:, :r])
+        recon_rollout_grad = recon_rollout_val * ratios["rollout"]
 
         all_slots = torch.cat([out["slots"]["corrected"], out["slots"]["predicted"]], dim=1)
-        slot_pred_loss, aux = self.loss_fn(
-            out["slots"]["predicted"], out["slots"]["target"],
+        slot_pred_grad, aux = self.loss_fn(
+            out["slots"]["predicted"][:, :r], out["slots"]["target"][:, :r],
             slots_full_seq=all_slots,
             rev_pred=out.get("rev_pred"),
             S_c=out.get("S_c"),
-            energy=out.get("energy_pairs"))
+            energy=out.get("energy_pairs"),
+            ratios=ratios)
 
         with torch.no_grad():
             aux['slot_var_across'] = all_slots.var(dim=2, unbiased=False).mean().item()
 
-        total_loss = recon_loss + slot_pred_loss
-        aux['recon_burnin'] = recon_burnin.item()
-        aux['recon_rollout'] = recon_rollout.item()
-        return total_loss, aux
+        total_val = (recon_burnin_val + recon_rollout_val +
+                     aux.get('slot_loss', 0.0) +
+                     aux.get('energy_loss', 0.0) +
+                     aux.get('static_loss', 0.0) +
+                     aux.get('rev_loss', 0.0))
+        total_grad = recon_burnin_grad + recon_rollout_grad + slot_pred_grad
+        aux['recon_burnin'] = recon_burnin_val.item()
+        aux['recon_rollout'] = recon_rollout_val.item()
+        aux['recon_burnin_scaled'] = recon_burnin_grad.item()
+        aux['recon_rollout_scaled'] = recon_rollout_grad.item()
+        aux['total'] = total_val.item()
+        aux['total_scaled'] = total_grad.item()
+        aux['rollout_actual'] = r
+        return total_grad, aux
 
     def _compute_grad_norms(self):
         '''计算各子模块梯度范数（需 unscale 后、global clip 前调用）。'''
         info = {}
-        for name in ['encoder', 'decoder', 'slot_attention', 'slotpi', 'f_z', 'mlp_rev']:
+        for name in ['encoder', 'decoder', 'slot_attention', 'predictor', 'f_z', 'mlp_rev']:
             mod = getattr(self.model, name, None)
             if mod is None:
                 continue
@@ -178,11 +196,11 @@ class Trainer:
             info[f'grad/{name}'] = gn**0.5 if gn > 0 else 0.0
         return info
 
-    def train_step(self, batch):
+    def train_step(self, batch, step=0):
         '''单步训练：前向 → 反向 → 梯度裁剪 → 更新参数（全 fp32）。'''
         self.model.train()
         self.optimizer.zero_grad()
-        loss, aux = self._compute_loss(batch)
+        loss, aux = self._compute_loss(batch, step=step)
         loss.backward()
 
         # 安全性检查：检测 inf/nan 梯度，跳过本步
@@ -229,8 +247,8 @@ class Trainer:
         viz_samples = []
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
-                loss, _ = self._compute_loss(batch)
-                total_loss += loss.item()
+                _, aux = self._compute_loss(batch, step=step or 0)
+                total_loss += aux.get('total', 0.0)
 
                 if _PIL_AVAIL and step is not None and len(viz_samples) < num_viz:
                     frames = batch["video"].to(self.device)
@@ -312,7 +330,18 @@ class Trainer:
 
     @staticmethod
     def _match_and_load(model_state, ckpt_state):
-        '''鲁棒 key 匹配加载：自动处理 _orig_mod 前缀差异 + 形状不匹配。'''
+        '''鲁棒 key 匹配加载：自动处理 _orig_mod 前缀差异 + 形状不匹配 + 重命名兼容。'''
+        # 历史重命名映射：旧存档 key 前缀 → 新模型 key 前缀
+        rename_map = {
+            'slotpi.': 'predictor.',
+            'SlotPiModel.': 'predictor.',
+        }
+        def translate(k):
+            for old, new in rename_map.items():
+                if k.startswith(old):
+                    return new + k[len(old):]
+            return k
+
         def match(ck, mk):
             return (ck == mk or
                     ck.replace('_orig_mod.', '') == mk or
@@ -321,12 +350,21 @@ class Trainer:
         ckpt_clean = {}
         for k, v in ckpt_state.items():
             ckpt_clean[k.replace('_orig_mod.', '')] = v
+        # 如果直接匹配结果差（<20%），尝试用映射后的 key 重试
         for ck_key, v in ckpt_state.items():
             matched_mk = None
             for mk_key in model_state:
                 if match(ck_key, mk_key) and v.shape == model_state[mk_key].shape:
                     matched_mk = mk_key
                     break
+            if matched_mk is None:
+                # 尝试映射后重匹配
+                mapped = translate(ck_key)
+                if mapped != ck_key:
+                    for mk_key in model_state:
+                        if match(mapped, mk_key) and v.shape == model_state[mk_key].shape:
+                            matched_mk = mk_key
+                            break
             if matched_mk is not None:
                 loaded[matched_mk] = v
         return loaded
@@ -380,7 +418,7 @@ class Trainer:
 
     def load_pretrained(self, path):
         '''仅加载 STATM-SAVi 预训练权重（encoder, slot_attention, decoder）。
-        忽略预测模块（f_z, slotpi, mlp_rev 等）的缺失/不匹配。'''
+        忽略预测模块（f_z, predictor, mlp_rev 等）的缺失/不匹配。'''
         ckpt = torch.load(path, map_location=self.device)
         model_state = self.model.state_dict()
         ckpt_state = ckpt["model"]
@@ -414,14 +452,14 @@ class Trainer:
                     break
 
                 gamma = self._set_gamma(global_step)
-                loss_val, aux, grad_norm = self.train_step(batch)
+                loss_val, aux, grad_norm = self.train_step(batch, step=global_step)
                 global_step += 1
                 pbar.update(1)
 
                 if global_step % self.log_every == 0:
                     lr = self.optimizer.param_groups[0]['lr']
                     pbar.set_postfix({
-                        "loss": f"{loss_val:.4f}",
+                        "loss": f"{aux.get('total', loss_val):.4f}",
                         "recon_b": f"{aux['recon_burnin']:.4f}",
                         "recon_r": f"{aux['recon_rollout']:.4f}",
                         "slot": f"{aux['slot_loss']:.4f}",
@@ -433,7 +471,7 @@ class Trainer:
                     })
 
                     # TensorBoard
-                    self.writer.add_scalar("loss/total", loss_val*10, global_step)
+                    self.writer.add_scalar("loss/total", aux.get('total', loss_val)*10, global_step)
                     self.writer.add_scalar("loss/recon_burnin", aux['recon_burnin']*10, global_step)
                     self.writer.add_scalar("loss/recon_rollout", aux['recon_rollout']*10, global_step)
                     self.writer.add_scalar("loss/slot", aux['slot_loss']*10, global_step)
@@ -443,10 +481,11 @@ class Trainer:
                     self.writer.add_scalar("lr", lr, global_step)
                     self.writer.add_scalar("rev_weight", gamma, global_step)
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
+                    self.writer.add_scalar("rollout/actual", aux.get('rollout_actual', self.rollout), global_step)
 
                     # 监控指标日志（梯度 + slot 统计）
                     monitor_keys = ['grad/encoder', 'grad/decoder',
-                                    'grad/slot_attention', 'grad/slotpi', 'grad/mlp_rev',
+                                    'grad/slot_attention', 'grad/predictor', 'grad/mlp_rev',
                                     'slot_var_across']
                     for k in monitor_keys:
                         if k in aux:
@@ -454,16 +493,17 @@ class Trainer:
 
                     # WandB
                     log_dict = {
+                        "loss/total": aux.get('total', loss_val)*10,
                         "loss/recon_burnin": aux['recon_burnin']*10,
                         "loss/recon_rollout": aux['recon_rollout']*10,
                         "loss/slot": aux['slot_loss']*10,
                         "loss/static": aux['static_loss']*10,
                         "loss/rev": aux['rev_loss']*10,
                         "loss/energy": aux['energy_loss']*10,
-                        "loss/total": loss_val*10,
                         "train/lr": lr,
                         "train/rev_weight": gamma,
                         "train/grad_norm": grad_norm,
+                        "train/rollout_actual": aux.get('rollout_actual', self.rollout),
                     }
                     for k in monitor_keys:
                         if k in aux:
@@ -476,11 +516,12 @@ class Trainer:
                         global_step, loss_val)
                     self._cleanup_old_checkpoints()
 
-                if loss_val < self.best_loss:
-                    self.best_loss = loss_val
+                best_candidate = aux.get('total', loss_val)
+                if best_candidate < self.best_loss:
+                    self.best_loss = best_candidate
                     self.save_checkpoint(
                         os.path.join(self.ckpt_dir, "best.pt"),
-                        global_step, loss_val)
+                        global_step, best_candidate)
 
             epoch += 1
             if epoch % self.eval_every_epochs == 0:

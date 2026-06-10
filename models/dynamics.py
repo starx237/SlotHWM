@@ -3,11 +3,11 @@ import torch.nn as nn
 from models.encoder import CNNEncoder, ResNetEncoder
 from models.decoder import SpatialBroadcastDecoder
 from models.attention import SlotAttention
-from models.slotpi_model import SlotPiModel
+from models.predictor import SlotPredictor
 from models.misc import GradientReversal, AffineCoupling
 
 
-class SlotPi(nn.Module):
+class SlotDynamicsModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
@@ -71,7 +71,7 @@ class SlotPi(nn.Module):
             hidden_dim=getattr(config, 'hidden_dim', 256),
         )
 
-        self.slotpi = SlotPiModel(config)
+        self.predictor = SlotPredictor(config)
 
         # GRL + 反向预测器（idea.md §4）
         self.grl = GradientReversal()
@@ -107,6 +107,8 @@ class SlotPi(nn.Module):
         if hasattr(torch, 'compile'):
             self.decoder = torch.compile(self.decoder)
             self.encoder = torch.compile(self.encoder)
+            if self.jepa:
+                self.target_encoder = torch.compile(self.target_encoder)
 
     def _add_sd_pos_encoding(self, slots, attn, grid_sz):
         B, N, _ = slots.shape
@@ -213,7 +215,7 @@ class SlotPi(nn.Module):
         cur_Z = Z_t
         for t in range(rollout):
             C_t = cur_Z[:, :, :static_dim]
-            out = self.slotpi(cur_Z, Z_buffer[:, :burnin + t], C=C_t, return_energy=True)
+            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_t, return_energy=True)
             next_Z, ep = out if isinstance(out, tuple) else (out, None)
             pred_Z_list.append(next_Z)
             if ep is not None:
@@ -289,7 +291,7 @@ class SlotPi(nn.Module):
             burnin_S.append(slots)
         burnin_S = torch.stack(burnin_S, dim=1)
 
-        # === Rollout（S 空间，slotpi 作为 predictor，含物理+时空推理）===
+        # === Rollout（S 空间，predictor 作为 predictor，含物理+时空推理）===
         buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
         slot_buffer = torch.zeros(B, buf_sz, self.config.num_slots, slot_dim, device=frames.device)
         for t in range(burnin):
@@ -299,7 +301,7 @@ class SlotPi(nn.Module):
         cur_S = slots
         for t in range(rollout):
             C_t = cur_S[:, :, :static_dim]
-            out = self.slotpi(cur_S, slot_buffer[:, :burnin + t], C=C_t, return_energy=True)
+            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_t, return_energy=True)
             next_S, ep = out if isinstance(out, tuple) else (out, None)
             pred_S_list.append(next_S)
             if ep is not None:
