@@ -400,7 +400,7 @@ class qp_Attentions(nn.Module):
                 hidden_size=2*embed_dim,
                 output_size=embed_dim,
                 num_hidden_layers=self.out_hidden_layers,
-                activate_output=True,
+                activate_output=False,
                 weight_init=weight_init,
             )
             self.p_mlp = MLP(
@@ -408,7 +408,7 @@ class qp_Attentions(nn.Module):
                 hidden_size=2*embed_dim,
                 output_size=embed_dim,
                 num_hidden_layers=self.out_hidden_layers,
-                activate_output=True,
+                activate_output=False,
                 weight_init=weight_init,
             )
 
@@ -610,9 +610,12 @@ class Slot_HamiltonianNet(nn.Module):
             hidden_size=mlp_size // 2,
             output_size=embed_dim,
             num_hidden_layers=2,
-            activate_output=True,
+            activate_output=False,
             activation_fn=nn.SiLU,
         )
+        # 最后一层零初始化，使初始 p_mlp_C ≈ identity
+        nn.init.zeros_(self.p_mlp_C.net[-1].weight)
+        nn.init.zeros_(self.p_mlp_C.net[-1].bias)
 
         # 输入输出归一化层
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)

@@ -503,7 +503,7 @@ class qp_Attentions(nn.Module):
                                 hidden_size=2*embed_dim, 
                                 output_size= embed_dim,
                                 num_hidden_layers=self.out_hidden_layers,
-                                activate_output=True,
+                                activate_output=False,
                                 weight_init=weight_init,
                                 )
             self.p_mlp = misc.MLP(
@@ -511,7 +511,7 @@ class qp_Attentions(nn.Module):
                                 hidden_size=2*embed_dim, 
                                 output_size= embed_dim,
                                 num_hidden_layers=self.out_hidden_layers,
-                                activate_output=True,
+                                activate_output=False,
                                 weight_init=weight_init,
                                 )
         

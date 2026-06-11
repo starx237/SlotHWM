@@ -71,9 +71,11 @@ class SlotPredictor(nn.Module):
             hidden_size=self.hidden_dim // 2,
             output_size=self.dynamic_dim,
             num_hidden_layers=2,
-            activate_output=True,
+            activate_output=False,
             activation_fn=nn.SiLU,
         )
+        nn.init.zeros_(self.fusion_mlp.net[-1].weight)
+        nn.init.zeros_(self.fusion_mlp.net[-1].bias)
 
     def compute_C(self, burnin_slots):
         '''
