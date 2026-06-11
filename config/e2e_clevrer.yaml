@@ -7,7 +7,7 @@ num_workers: 4
 pretrain: false
 freeze_slot: false
 jepa: true
-jepa_alpha: 0.99
+jepa_alpha: 0.996
 
 # 编码器
 encoder_type: "cnn"
@@ -45,7 +45,7 @@ num_steps: 200000
 batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
-max_grad_norm: 2.5
+max_grad_norm: 0.2
 burnin_frames: 6
 rollout_frames: 6
 
@@ -73,8 +73,8 @@ keep_last_checkpoints: 10
 workdir: "./experiments/e2e_clevrer"
 
 # 断点续训
-resume: false
-resume_step: 0
+resume: true
+resume_step: 7000
 
 # 梯度分量裁剪
 max_encoder_gnorm: 0.0
