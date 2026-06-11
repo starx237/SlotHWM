@@ -210,12 +210,14 @@ class SlotDynamicsModel(nn.Module):
         burnin_Z = torch.stack(burnin_Z, dim=1)
 
         # Phase 3: Rollout 在 Z 空间
+        freeze_C = getattr(self.config, 'freeze_C', False)
+        global_C = self.predictor.compute_C(burnin_Z) if freeze_C else None
         pred_Z_list = []
         energy_pairs = []
         cur_Z = Z_t
         for t in range(rollout):
-            C_t = cur_Z[:, :, :static_dim]
-            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_t, return_energy=True)
+            C_use = global_C if freeze_C else cur_Z[:, :, :static_dim]
+            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use, return_energy=True)
             next_Z, ep = out if isinstance(out, tuple) else (out, None)
             pred_Z_list.append(next_Z)
             if ep is not None:
@@ -296,12 +298,14 @@ class SlotDynamicsModel(nn.Module):
         slot_buffer = torch.zeros(B, buf_sz, self.config.num_slots, slot_dim, device=frames.device)
         for t in range(burnin):
             slot_buffer[:, t] = burnin_S[:, t]
+        freeze_C = getattr(self.config, 'freeze_C', False)
+        global_C = self.predictor.compute_C(burnin_S) if freeze_C else None
         pred_S_list = []
         energy_pairs = []
         cur_S = slots
         for t in range(rollout):
-            C_t = cur_S[:, :, :static_dim]
-            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_t, return_energy=True)
+            C_use = global_C if freeze_C else cur_S[:, :, :static_dim]
+            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_use, return_energy=True)
             next_S, ep = out if isinstance(out, tuple) else (out, None)
             pred_S_list.append(next_S)
             if ep is not None:

@@ -51,7 +51,7 @@ warmup_steps: 5000
 lambda_slots: 0.5
 lambda_images: 0.0
 lambda_energy: 0.10
-lambda_static: 0.1
+lambda_static: 0.0
 lambda_rev: 0.005
 lambda_recon_burnin: 0.0
 lambda_recon_rollout: 2.0
@@ -63,8 +63,8 @@ rev_mlp_hidden: 128
 rev_grad_max_norm: 0.05
 
 # 日志与存档
-log_every: 10
-eval_every_epochs: 5
+log_every: 2
+eval_every_epochs: 2
 save_every: 1000
 keep_last_checkpoints: 10
 workdir: "./experiments/clevrer"
@@ -83,3 +83,6 @@ freeze_slot: True
 
 # 预训练权重路径（finetune 时加载 encoder + slot_attention + decoder，预测模块变化不影响加载）
 pretrained_path: "./pretrained/clevrer/checkpoints/best.pt"
+
+# 第四次修改：C 的冻结模式
+freeze_C: true

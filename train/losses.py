@@ -8,12 +8,18 @@ def get_loss_ratios(step):
     实际系数 = config_value * ratio(step)。
     每个比例的公式可单独自定义。"""
     ratios = {
+        # "burnin": 1.0,
+        # "rollout": 1.0 - 0.5 * max(0.0, min(1.0, (step - 5000) / (50000 - 5000))),
+        # "slots": min(1.0, step / 40000),
+        # "energy": min(1.0, step / 20000),
+        # "rev": 1.0,
+        # "static": min(1.0, step / 20000),
         "burnin": 1.0,
-        "rollout": 1.0 - 0.5 * max(0.0, min(1.0, (step - 5000) / (50000 - 5000))),
-        "slots": min(1.0, step / 40000),
-        "energy": min(1.0, step / 20000),
+        "rollout": 1.0,
+        "slots": 1.0,
+        "energy": 1.0,
         "rev": 1.0,
-        "static": min(1.0, step / 20000),
+        "static": 1.0,
     }
     return ratios
 
@@ -21,7 +27,8 @@ def get_loss_ratios(step):
 def get_rollout_frames(step, max_rollout):
     """返回当前步数应使用的 rollout 帧数（最大值不超过 max_rollout）。
     用于逐步增加预测长度等调度策略。"""
-    return 2 + 2 * (step >= 10000) + 2 * (step >= 30000)
+    # return 2 + 2 * (step >= 10000) + 2 * (step >= 30000)
+    return max_rollout
 
 
 class SlotPiLoss(nn.Module):

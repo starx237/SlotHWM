@@ -604,6 +604,16 @@ class Slot_HamiltonianNet(nn.Module):
         )
         # 积分器（方法从配置传入）
         self.integrator = Integrator(method=self.integrator_method)
+        # 第四次修改：P_t = MLP_P(CrossAtt_P(Z_t^d, history), C_t)
+        self.p_mlp_C = MLP(
+            input_size=embed_dim + static_dim,
+            hidden_size=mlp_size // 2,
+            output_size=embed_dim,
+            num_hidden_layers=2,
+            activate_output=True,
+            activation_fn=nn.SiLU,
+        )
+
         # 输入输出归一化层
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
 
@@ -625,6 +635,9 @@ class Slot_HamiltonianNet(nn.Module):
             buffer = self.mlp_norm(buffer)
 
         q, p = self.qp_net(slot, buffer)
+        # 第四次修改：P_t = MLP_P(CrossAtt_P(Z_t^d, history), C_t)
+        if C is not None:
+            p = self.p_mlp_C(torch.cat([p, C], dim=-1))
         q.requires_grad_(True)
         p.requires_grad_(True)
 

@@ -23,13 +23,14 @@ class SlotPredictor(nn.Module):
         self.num_slots = getattr(config, 'num_slots', 7)
         self.buffer_len = getattr(config, 'buffer_len', 10)
 
-        # 第二次修改：C_t = S^c_t，不再从 burnin 序列计算全局 C
-        # 原先的 C 上下文计算模块：
-        # self.C_attn = GeneralizedDotProductAttention()
-        # self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
-        # self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
-        # self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
-        # self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
+        # 第四次修改：freeze_C 配置
+        self.freeze_C = getattr(config, 'freeze_C', False)
+        if self.freeze_C:
+            self.C_attn = GeneralizedDotProductAttention()
+            self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
+            self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
+            self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
+            self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
 
         # === 物理模块：基于哈密顿力学 ===
         self.physics_module = Slot_HamiltonianNet(
@@ -64,9 +65,9 @@ class SlotPredictor(nn.Module):
             ) for _ in range(num_spatiotemporal_blocks)
         ])
 
-        # === MLP_S / MLP_Z：融合 Q_next 和 C 生成新的动态特征（2 层隐藏层，hidden_dim//2，SiLU）===
+        # 第四次修改：MLP_Z 只接收 Q_next（不含 C），因为 Z^d 应不包含 C 的信息
         self.fusion_mlp = MLP(
-            input_size=self.static_dim + self.dynamic_dim,
+            input_size=self.dynamic_dim,
             hidden_size=self.hidden_dim // 2,
             output_size=self.dynamic_dim,
             num_hidden_layers=2,
@@ -76,33 +77,36 @@ class SlotPredictor(nn.Module):
 
     def compute_C(self, burnin_slots):
         '''
-        第二次修改：C_t = S^c_t，此方法不再使用。
-        原先从 burnin 序列计算全局 C 的代码已被注释保留。
+        第四次修改：根据 freeze_C 模式计算 C。
+        - freeze_C=true: 从 burnin Z^c 序列通过自注意力聚合全局 C
+        - freeze_C=false: 返回最后一个时间步的 Z^c（时变 C_t）
         '''
-        # 原始实现：
-        # B, T, N, D = burnin_slots.shape
-        # D_sta = self.static_dim
-        # sta = burnin_slots[:, :, :, :D_sta]  # (B, T, N, D')
-        #
-        # # 注入时间位置编码
-        # pos_freq = 1.0 / (10000.0 ** (torch.arange(0, D_sta, 2, device=burnin_slots.device).float() / D_sta))
-        # pos_t = torch.arange(T, device=burnin_slots.device).float().unsqueeze(1)
-        # pos_enc = torch.zeros(T, D_sta, device=burnin_slots.device)
-        # pos_enc[:, 0::2] = torch.sin(pos_t * pos_freq)
-        # pos_enc[:, 1::2] = torch.cos(pos_t * pos_freq)
-        # pos_enc = pos_enc[None, :, None, :]  # (1, T, 1, D')
-        # sta = sta + pos_enc
-        #
-        # # 在时间维度上做自注意力，得到聚合的上下文 C
-        # sta_flat = sta.reshape(B * N, T, D_sta)  # (B*N, T, D')
-        # q = self.dense_cq(sta_flat).view(B * N, T, self.num_heads, -1)
-        # k = self.dense_ck(sta_flat).view(B * N, T, self.num_heads, -1)
-        # v = self.dense_cv(sta_flat).view(B * N, T, self.num_heads, -1)
-        # attn_out, _ = self.C_attn(q[:, -1:], k, v)  # (B*N, 1, H, Dh)
-        # attn_out = attn_out.view(B, N, self.qkv_size)
-        # C = self.dense_co(attn_out)  # (B, N, D')
-        # return C
-        return burnin_slots[:, -1, :, :self.static_dim]
+        if not self.freeze_C:
+            return burnin_slots[:, -1, :, :self.static_dim]
+
+        # freeze_C=true: 从 burnin 序列计算全局 C
+        B, T, N, D = burnin_slots.shape
+        D_sta = self.static_dim
+        sta = burnin_slots[:, :, :, :D_sta]
+
+        # 注入时间位置编码
+        pos_freq = 1.0 / (10000.0 ** (torch.arange(0, D_sta, 2, device=burnin_slots.device).float() / D_sta))
+        pos_t = torch.arange(T, device=burnin_slots.device).float().unsqueeze(1)
+        pos_enc = torch.zeros(T, D_sta, device=burnin_slots.device)
+        pos_enc[:, 0::2] = torch.sin(pos_t * pos_freq)
+        pos_enc[:, 1::2] = torch.cos(pos_t * pos_freq)
+        pos_enc = pos_enc[None, :, None, :]
+        sta = sta + pos_enc
+
+        # 在时间维度上做自注意力，得到聚合的上下文 C
+        sta_flat = sta.reshape(B * N, T, D_sta)
+        q = self.dense_cq(sta_flat).view(B * N, T, self.num_heads, -1)
+        k = self.dense_ck(sta_flat).view(B * N, T, self.num_heads, -1)
+        v = self.dense_cv(sta_flat).view(B * N, T, self.num_heads, -1)
+        attn_out, _ = self.C_attn(q[:, -1:], k, v)
+        attn_out = attn_out.view(B, N, self.qkv_size)
+        C_out = self.dense_co(attn_out)
+        return C_out
 
     def forward(self, z, z_buffer, C: Optional[torch.Tensor] = None, return_energy=False):
         '''
@@ -133,10 +137,14 @@ class SlotPredictor(nn.Module):
             q_next, p_next = phys_out
             energy_pair = None
 
-        # 融合：MLP(Q_next, C) → Z^d_next
-        fusion_input = torch.cat([q_next, C], dim=-1)  # (B, N, static_dim + dynamic_dim)
-        next_dyn = self.fusion_mlp(fusion_input)       # (B, N, dynamic_dim)
-        z_phys = torch.cat([z[:, :, :D_sta], next_dyn], dim=-1)  # (B, N, D) = [Z^c | Z^d_hat]
+        # 第四次修改：MLP_Z 只接收 Q_next（不含 C）
+        next_dyn = self.fusion_mlp(q_next)             # (B, N, dynamic_dim)
+
+        # 第四次修改：根据 freeze_C 决定 Z^c 的来源
+        if self.freeze_C:
+            z_phys = torch.cat([C, next_dyn], dim=-1)  # Z^c 冻结为全局 C
+        else:
+            z_phys = torch.cat([z[:, :, :D_sta], next_dyn], dim=-1)
 
         # ============ 时空推理模块（纯增量修正） ============
         st_out = torch.zeros_like(z)
@@ -144,7 +152,12 @@ class SlotPredictor(nn.Module):
             st_out = block(st_out, z_buffer)
 
         # ============ 融合 ============
-        pred_z_next = z_phys + st_out  # (B, N, D)
+        if self.freeze_C:
+            # ST 只修正 D^d 维度，Z^c 冻结为 C 永不修改
+            pred_z_next = z_phys.clone()
+            pred_z_next[:, :, D_sta:] = pred_z_next[:, :, D_sta:] + st_out[:, :, D_sta:]
+        else:
+            pred_z_next = z_phys + st_out  # (B, N, D)
 
         if return_energy:
             return pred_z_next, energy_pair

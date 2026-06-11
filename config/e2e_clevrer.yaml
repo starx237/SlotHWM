@@ -76,6 +76,9 @@ workdir: "./experiments/e2e_clevrer"
 resume: true
 resume_step: 7000
 
+# 第四次修改：C 的冻结模式
+freeze_C: false
+
 # 梯度分量裁剪
 max_encoder_gnorm: 0.0
 max_decoder_gnorm: 0.0

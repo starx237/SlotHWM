@@ -61,6 +61,9 @@ rev_mlp_hidden: 128
 
 rev_grad_max_norm: 0.05
 
+# 第四次修改：C 的冻结模式（预训练不生效，保留默认值）
+freeze_C: false
+
 log_every: 1
 eval_every_epochs: 1
 save_every: 1000
