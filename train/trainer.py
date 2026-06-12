@@ -320,10 +320,11 @@ class Trainer:
                 self.wandb.log({f"eval/recon_{idx}": self.wandb.wandb.Image(path)}, step=step)
 
     def _cleanup_old_checkpoints(self):
-        '''只保留最近的 keep_last 个存档。'''
+        '''只保留最近的 keep_last 个存档（按 step 数值排序）。'''
         if self.keep_last <= 0:
             return
-        ckpts = sorted(glob.glob(os.path.join(self.ckpt_dir, "step_*.pt")))
+        ckpts = sorted(glob.glob(os.path.join(self.ckpt_dir, "step_*.pt")),
+                       key=lambda p: int(os.path.basename(p).replace('step_', '').replace('.pt', '')))
         while len(ckpts) > self.keep_last:
             os.remove(ckpts[0])
             ckpts = ckpts[1:]
