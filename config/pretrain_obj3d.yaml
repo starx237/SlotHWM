@@ -1,14 +1,14 @@
-# SlotPi 预训练配置 — CLEVRER（仅 STATM-SAVi，无 rollout）
-dataset: "clevrer"
-data_root: "./data/clevrer"
+# SlotPi 预训练配置 — OBJ3D（仅 STATM-SAVi，无 rollout）
+dataset: "obj3d"
+data_root: "./data/obj3d"
 num_workers: 4
 
 pretrain: true
 
-# 编码器
+# 编码器（OBJ3D 分辨率 64×64）
 encoder_type: "cnn"
 in_channels: 3
-img_size: 128
+img_size: 64
 encoder_hidden: 64
 
 # Slot Attention
@@ -32,9 +32,12 @@ out_mlp: false
 out_hidden_layers: 1
 pre_norm: false
 dropout_rate: 0.1
-delta_t: 0.125
+delta_t: 0.08
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
+
+# 时域降采样（原始 25fps → 12.5fps）
+subsample: 2
 
 # 训练
 num_steps: 100000
@@ -44,7 +47,7 @@ weight_decay: 0.0
 max_grad_norm: 0.05
 burnin_frames: 6
 rollout_frames: 0
-
+slide_stride: 4
 warmup_steps: 2500
 
 # 损失权重（预训练仅重建损失）
@@ -64,12 +67,12 @@ rev_grad_max_norm: 0.05
 # 冻结静态特征
 freeze_C: false
 
-log_every: 1
-eval_every_epochs: 1
+log_every: 10
+eval_every_epochs: 4
 save_every: 1000
 keep_last_checkpoints: 10
-workdir: "./pretrained/clevrer"
+workdir: "./pretrained/obj3d"
 
 # 断点续训
 resume: true
-resume_step: 52000
+resume_step: 10000

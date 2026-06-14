@@ -24,8 +24,11 @@ class OBJ3DDataset(BaseVideoDataset):
             if os.path.exists(data_file):
                 self.video_data = torch.load(data_file, weights_only=True)
                 self.video_ids = sorted(self.video_data.keys())
-                # 滑动窗口：每个视频产生多个 (video_id, t_start) 对
-                T = self.video_data[self.video_ids[0]].shape[0]  # 100
+                # 时域降采样：每隔 subsample 帧取一帧
+                if subsample > 1:
+                    for vid in self.video_ids:
+                        self.video_data[vid] = self.video_data[vid][::subsample]
+                T = self.video_data[self.video_ids[0]].shape[0]
                 self.windows = []
                 for vid in self.video_ids:
                     for t in range(0, T - num_frames + 1, stride):

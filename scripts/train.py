@@ -92,8 +92,10 @@ def main():
 
     num_frames = getattr(cfg, 'num_frames', None) or (getattr(cfg, 'burnin_frames', 6) + getattr(cfg, 'rollout_frames', 10))
     slide_stride = getattr(cfg, 'slide_stride', 1)
+    subsample = getattr(cfg, 'subsample', 1)
     ds = get_dataset(cfg.dataset, data_path=cfg.data_root,
-                     num_frames=num_frames, stride=slide_stride)
+                     num_frames=num_frames, stride=slide_stride,
+                     subsample=subsample)
     loader = ds.get_dataloader(batch_size=cfg.batch_size, shuffle=True,
                                num_workers=getattr(cfg, 'num_workers', 4),
                                generator=seed_gen)
