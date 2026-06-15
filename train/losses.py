@@ -74,15 +74,15 @@ class SlotPiLoss(nn.Module):
             energy_val = sum(losses) / len(losses)
 
         # ---- 静态特征方差正则 L_LC（梯度不传播，仅监控） ----
-        static_raw = torch.tensor(0.0, device=pred_slots.device)
-        if slots_full_seq is not None and self.C_LC > 0:
-            D_sta = getattr(self.config, 'static_dim', slots_full_seq.shape[-1] // 2)
-            static_features = slots_full_seq[..., :D_sta].detach()
+        # 使用 Z^c（仿射耦合后的静态部分）计算 slot 间方差；S_c 在 finetune 中实际为 Z^c
+        static_raw_local = torch.tensor(0.0, device=pred_slots.device)
+        if S_c is not None and self.C_LC > 0:
+            static_features = S_c.detach()
             variance = static_features.var(dim=1, unbiased=False)
             s2_m = variance.mean(dim=-1)
-            N = slots_full_seq.shape[2]
-            static_raw = self.C_LC * s2_m.sum(dim=-1).mean() / N
-        static_grad = r.get("static", 1.0) * static_raw
+            N = S_c.shape[2]
+            static_raw_local = self.C_LC * s2_m.sum(dim=-1).mean() / N
+        static_grad = r.get("static", 1.0) * static_raw_local
 
         # ---- GRL 反向预测损失 L_rev（idea.md §4） ----
         rev_raw = torch.tensor(0.0, device=pred_slots.device)
@@ -102,7 +102,7 @@ class SlotPiLoss(nn.Module):
         aux = {
             "slot_loss": (self.lambda_slots * slot_val).item(),
             "energy_loss": (self.lambda_energy * energy_val).item(),
-            "static_loss": static_raw.item(),
+            "static_loss": static_raw_local.item(),
             "rev_loss": rev_raw.item(),
         }
         return total_grad, aux
