@@ -150,8 +150,8 @@ class SlotPredictor(nn.Module):
 
         # ============ 时空推理模块（纯增量修正） ============
         st_out = torch.zeros_like(z)
-        for block in self.spatiotemporal_module:
-            st_out = block(st_out, z_buffer)
+        # for block in self.spatiotemporal_module:
+        #     st_out = block(st_out, z_buffer)
 
         # ============ 融合 ============
         if self.freeze_C:

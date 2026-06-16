@@ -110,24 +110,26 @@ class SlotDynamicsModel(nn.Module):
             if self.jepa:
                 self.target_encoder = torch.compile(self.target_encoder)
 
+    POS_EMBED_DIM = 32  # S 空间中位置编码占用的维度数，固定不变，与 Z 空间的划分解耦
+
     def _add_sd_pos_encoding(self, slots, attn, grid_sz):
         B, N, _ = slots.shape
-        D_sta = self.config.static_dim
-        D_dyn = self.config.dynamic_dim
+        D_pos = self.POS_EMBED_DIM
+        pos_start = slots.shape[-1] - D_pos
         attn_2d = attn.view(B, N, grid_sz, grid_sz)
         gy = torch.linspace(-1, 1, grid_sz, device=slots.device)
         gx = torch.linspace(-1, 1, grid_sz, device=slots.device)
         gy, gx = torch.meshgrid(gy, gx, indexing='ij')
         pos_y = (attn_2d * gy[None, None]).sum(dim=[2, 3])
         pos_x = (attn_2d * gx[None, None]).sum(dim=[2, 3])
-        half = D_dyn // 4
+        half = D_pos // 4
         freq = 1.0 / (10000.0 ** (torch.arange(0, half, device=slots.device).float() / half))
         pe = torch.stack([
             torch.sin(pos_y.unsqueeze(-1) * freq), torch.cos(pos_y.unsqueeze(-1) * freq),
             torch.sin(pos_x.unsqueeze(-1) * freq), torch.cos(pos_x.unsqueeze(-1) * freq),
-        ], dim=-1).reshape(B, N, D_dyn)
+        ], dim=-1).reshape(B, N, D_pos)
         out = slots.clone()
-        out[:, :, D_sta:] = out[:, :, D_sta:] + pe
+        out[:, :, pos_start:] = out[:, :, pos_start:] + pe
         return out
 
     def _sa(self, feat_t, slots, t, attn_module=None, iters_first=3, iters_rest=1):

@@ -435,7 +435,7 @@ class HamiltonianNet(nn.Module):
     '''
     哈密顿量网络，输入 q, p, C，输出标量能量 H。
     将能量分解为三项：
-      H = sum_i MLP_K(P_i, C_i) + sum_i MLP_V(Q_i, C_i) + sum(Linear_I(SelfAtt_I(Concat(Q_t|C_t))))
+      H = sum_i MLP_K(P_i, C_i) + sum_i MLP_V(Q_i, C_i) + sum(Transformer_I(Concat(Q_t|C_t)))
     其中第一项为动能，第二项为势能，第三项为物体间交互能（自掩码，不计算自交互）。
     '''
     def __init__(self,
@@ -479,14 +479,30 @@ class HamiltonianNet(nn.Module):
             hidden_size=mlp_size // 2,
             output_size=1,
             num_hidden_layers=2,
-            activate_output=True,
+            activate_output=False,
             weight_init=weight_init,
             activation_fn=nn.Softplus,
         )
 
-        # 交互能使用 Concat(Q_t, C_t) 作为自注意力输入
-        self.dense_i_concat = nn.Linear(embed_dim + static_dim, qkv_size)  # Concat(Q, C) → qkv
-        self.dense_io = nn.Linear(qkv_size, 1)
+        # 交互能：TransformerBlock（带自掩码）+ MLP，与 baseline 一致
+        # 注意：关闭 dropout（避免影响能量守恒），激活函数用 Softplus
+        self.interaction_transformer = TransformerBlock(
+            embed_dim=embed_dim + static_dim,
+            num_heads=num_heads,
+            qkv_size=qkv_size,
+            mlp_size=mlp_size,
+            pre_norm=pre_norm,
+            dropout_rate=0.,
+            activation_fn=nn.Softplus,
+        )
+        self.interaction_mlp = MLP(
+            input_size=embed_dim + static_dim,
+            hidden_size=mlp_size // 2,
+            output_size=1,
+            num_hidden_layers=2,
+            activate_output=False,
+            activation_fn=nn.Softplus,
+        )
 
     def forward(self, q: Array, p: Array, C: Array) -> Array:
         '''
@@ -507,27 +523,12 @@ class HamiltonianNet(nn.Module):
         potential = self.potential_net(potential_input).squeeze(-1)  # (B, N)
         potential = potential.sum(dim=1)  # (B,)
 
-        # 交互能使用 Concat(Q_t, C_t) 作为自注意力输入
+        # 交互能：TransformerBlock（带自掩码）+ MLP，与 baseline 一致
         B, N, D = q.shape
         combined = torch.cat([q, C], dim=-1)  # (B, N, embed_dim + static_dim)
-        proj = self.dense_i_concat(combined)  # (B, N, qkv_size)
 
-        # 计算原始注意力分数（未经过 softmax）
-        attn_logits = torch.einsum("bqd,bkd->bqk", proj, proj)  # (B, N, N)
-        attn_logits = attn_logits * (proj.shape[-1] ** -0.5)
-
-        # 自掩码：在对角线位置设为 -inf，使得 softmax 后为 0（不计算自己与自己的交互）
-        diag_mask = torch.eye(N, device=q.device, dtype=torch.bool)
-        attn_logits = attn_logits.masked_fill(diag_mask, float('-inf'))
-
-        # Softmax 得到注意力权重（此时 diag 位置为 0）
-        attn_weights = F.softmax(attn_logits, dim=-1)
-
-        # 加权的值求和，得到每个物体的交互贡献 SI_t
-        interaction = torch.einsum("bqk,bkd->bqd", attn_weights, proj)  # (B, N, Q)
-        interaction = self.dense_io(interaction).squeeze(-1)  # (B, N)
-        # 对于一个物体对，两个物体分别贡献一半交互能
-        # 然后整体的 I_t = Sum(SI_t)
+        x = self.interaction_transformer(combined, symmetrize_attn=True, self_mask=True)  # (B, N, D')
+        interaction = self.interaction_mlp(x).squeeze(-1)  # (B, N)
         interaction = interaction.sum(dim=1)  # (B,)
 
         # 总能量

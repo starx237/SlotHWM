@@ -16,8 +16,8 @@ encoder_hidden: 64
 
 # Slot Attention
 num_slots: 7
-static_dim: 96
-dynamic_dim: 32
+static_dim: 112
+dynamic_dim: 16
 slot_hidden: 128
 
 # 解码器

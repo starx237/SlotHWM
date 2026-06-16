@@ -17,22 +17,30 @@ class GeneralizedDotProductAttention(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, query, key, value, bias=None):
+    def forward(self, query, key, value, bias=None,
+                symmetrize_attn=False, self_mask=False):
         """
         Args:
             query: (B, *Q, H, D) 查询张量
             key: (B, *K, H, D) 键张量
             value: (B, *K, H, D) 值张量
             bias: 可选的注意力偏置
+            symmetrize_attn: 是否对称化注意力权重 W = (W + W^T) / 2
+            self_mask: 是否将对角线（Q=K）位置置零（阻止自交互）
         Returns:
             (B, *Q, H, D) 注意力加权后的值张量 和 注意力权重
         """
         assert query.shape[-1] == key.shape[-1]
-        # 计算注意力分数: ...qkh
         attn = torch.einsum("...qh d,...kh d->...qkh", query, key)
         if bias is not None:
             attn = attn + bias
         attn = F.softmax(attn, dim=-1)
+        if self_mask:
+            N = attn.shape[-2]
+            eye = torch.eye(N, dtype=torch.bool, device=attn.device)
+            attn = attn.masked_fill(eye[None, :, :, None], 0)
+        if symmetrize_attn:
+            attn = (attn + attn.transpose(-3, -2)) / 2
         return torch.einsum("...qkh,...kh d->...qh d", attn, value), attn
 
 
@@ -41,7 +49,7 @@ class TransformerBlock(nn.Module):
     标准 Transformer 块，包含多头自注意力和 MLP 前馈网络。
     支持预归一化和后归一化两种模式，可选 dropout。
     '''
-    def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False, weight_init=None, dropout_rate=0.1):
+    def __init__(self, embed_dim, num_heads, qkv_size, mlp_size, pre_norm=False, weight_init=None, dropout_rate=0.1, activation_fn=nn.ReLU):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -49,6 +57,7 @@ class TransformerBlock(nn.Module):
         self.mlp_size = mlp_size
         self.pre_norm = pre_norm
         self.dropout_rate = dropout_rate
+        self.activation_fn = activation_fn
 
         assert num_heads >= 1
         assert qkv_size % num_heads == 0, "embed dim must be divisible by num_heads"
@@ -64,7 +73,7 @@ class TransformerBlock(nn.Module):
         # MLP 前馈网络
         self.mlp = nn.Sequential(
             nn.Linear(embed_dim, mlp_size),
-            nn.ReLU(),
+            activation_fn(),
             nn.Linear(mlp_size, embed_dim),
         )
 
@@ -75,16 +84,17 @@ class TransformerBlock(nn.Module):
             self.att_drop = nn.Dropout(self.dropout_rate)
             self.ff_drop = nn.Dropout(self.dropout_rate)
 
-    def forward(self, x, padding_mask=None):
+    def forward(self, x, padding_mask=None, bias=None,
+                symmetrize_attn=False, self_mask=False):
         B, N, D = x.shape
 
         if self.pre_norm:
-            # 预归一化路径：先 LayerNorm 再做 Attention/MLP
             x_norm = self.layernorm1(x)
             q = self.dense_q(x_norm).view(B, N, self.num_heads, self.head_dim)
             k = self.dense_k(x_norm).view(B, N, self.num_heads, self.head_dim)
             v = self.dense_v(x_norm).view(B, N, self.num_heads, self.head_dim)
-            attn_out, _ = self.attn(query=q, key=k, value=v)
+            attn_out, _ = self.attn(query=q, key=k, value=v, bias=bias,
+                                    symmetrize_attn=symmetrize_attn, self_mask=self_mask)
             attn_out = self.dense_o(attn_out.reshape(B, N, self.qkv_size))
             attn_out = x + self.att_drop(attn_out) if self.dropout_rate > 0 else x + attn_out
             y = attn_out
@@ -92,11 +102,11 @@ class TransformerBlock(nn.Module):
             z = self.mlp(y_norm)
             z = y + self.ff_drop(z) if self.dropout_rate > 0 else y + z
         else:
-            # 后归一化路径：先 Attention/MLP 再做 LayerNorm
             q = self.dense_q(x).view(B, N, self.num_heads, self.head_dim)
             k = self.dense_k(x).view(B, N, self.num_heads, self.head_dim)
             v = self.dense_v(x).view(B, N, self.num_heads, self.head_dim)
-            attn_out, _ = self.attn(query=q, key=k, value=v)
+            attn_out, _ = self.attn(query=q, key=k, value=v, bias=bias,
+                                    symmetrize_attn=symmetrize_attn, self_mask=self_mask)
             attn_out = self.dense_o(attn_out.reshape(B, N, self.qkv_size))
             attn_out = x + self.att_drop(attn_out) if self.dropout_rate > 0 else x + attn_out
             attn_out = self.layernorm1(attn_out)
