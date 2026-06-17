@@ -494,7 +494,8 @@ class Trainer:
                     # 监控指标日志（梯度 + slot 统计）
                     monitor_keys = ['grad/encoder', 'grad/decoder',
                                     'grad/slot_attention', 'grad/predictor', 'grad/mlp_rev',
-                                    'slot_var_across']
+                                    'slot_var_across',
+                                    'loss_q', 'loss_p']
                     for k in monitor_keys:
                         if k in aux:
                             self.writer.add_scalar(k, aux[k], global_step)
