@@ -141,7 +141,7 @@ class Trainer:
 
         if self.pretrain or self.rollout == 0:
             total_grad = recon_burnin_grad
-            aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0}
+            aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0, "loss_q": 0.0, "loss_p": 0.0}
             with torch.no_grad():
                 aux['slot_var_across'] = out["slots"]["corrected"].var(dim=2, unbiased=False).mean().item()
             aux['recon_burnin'] = recon_burnin_val.item()
@@ -183,6 +183,13 @@ class Trainer:
         aux['total'] = total_val.item()
         aux['total_scaled'] = total_grad.item()
         aux['rollout_actual'] = r
+
+        with torch.no_grad():
+            qp = out.get("qp_metrics")
+            if qp is not None:
+                aux['loss_q'] = qp.get("loss_q", 0.0)
+                aux['loss_p'] = qp.get("loss_p", 0.0)
+
         return total_grad, aux
 
     def _compute_grad_norms(self):

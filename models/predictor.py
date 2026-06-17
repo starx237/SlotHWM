@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from typing import Optional
-from models.hamiltonian import Slot_HamiltonianNet
+from models.hamiltonian import Slot_HamiltonianNet, TimeAttentionBlock
 from models.attention import GeneralizedDotProductAttention, TimeSpaceTransformerBlock2
 from models.misc import MLP
 
@@ -23,14 +23,18 @@ class SlotPredictor(nn.Module):
         self.num_slots = getattr(config, 'num_slots', 7)
         self.buffer_len = getattr(config, 'buffer_len', 10)
 
-        # 第四次修改：freeze_C 配置
+        # 第四次修改：freeze_C 配置 — C 使用 TimeAttentionBlock 聚合 burnin Z^c
         self.freeze_C = getattr(config, 'freeze_C', False)
         if self.freeze_C:
-            self.C_attn = GeneralizedDotProductAttention()
-            self.dense_cq = nn.Linear(self.static_dim, self.qkv_size)
-            self.dense_ck = nn.Linear(self.static_dim, self.qkv_size)
-            self.dense_cv = nn.Linear(self.static_dim, self.qkv_size)
-            self.dense_co = nn.Linear(self.qkv_size, self.static_dim)
+            self.C_time_attn = TimeAttentionBlock(
+                embed_dim=self.static_dim,
+                num_heads=self.num_heads,
+                qkv_size=self.qkv_size,
+                mlp_size=self.hidden_dim // 2,
+                pre_norm=True,            # pre-norm 确保 residual 不被 LN 改变
+                dropout_rate=self.dropout_rate,
+                zero_init=True,
+            )
 
         # === 物理模块：基于哈密顿力学 ===
         self.physics_module = Slot_HamiltonianNet(
@@ -79,47 +83,34 @@ class SlotPredictor(nn.Module):
 
     def compute_C(self, burnin_slots):
         '''
-        第四次修改：根据 freeze_C 模式计算 C。
-        - freeze_C=true: 从 burnin Z^c 序列通过自注意力聚合全局 C
-        - freeze_C=false: 返回最后一个时间步的 Z^c（时变 C_t）
+        从 burnin Z^c 序列通过 TimeAttentionBlock 聚合全局 C。
+        - Query: 所有 burnin 帧 Z^c 的均值（每个 Z^c_t 有 1/T 的残差路径）
+        - Key/Value: 所有 burnin 帧 Z^c（K 加时间 PE, V 不加）
         '''
         if not self.freeze_C:
             return burnin_slots[:, -1, :, :self.static_dim]
 
-        # freeze_C=true: 从 burnin 序列计算全局 C
-        B, T, N, D = burnin_slots.shape
+        B, T, N, _ = burnin_slots.shape
         D_sta = self.static_dim
-        sta = burnin_slots[:, :, :, :D_sta]
+        sta = burnin_slots[:, :, :, :D_sta]  # (B, T, N, D_sta)
+        query = sta.mean(dim=1)  # (B, N, D_sta)
 
-        # 注入时间位置编码
-        pos_freq = 1.0 / (10000.0 ** (torch.arange(0, D_sta, 2, device=burnin_slots.device).float() / D_sta))
-        pos_t = torch.arange(T, device=burnin_slots.device).float().unsqueeze(1)
-        pos_enc = torch.zeros(T, D_sta, device=burnin_slots.device)
-        pos_enc[:, 0::2] = torch.sin(pos_t * pos_freq)
-        pos_enc[:, 1::2] = torch.cos(pos_t * pos_freq)
-        pos_enc = pos_enc[None, :, None, :]
-        sta = sta + pos_enc
+        return self.C_time_attn(query, sta, query_pos=-1)
+        # return query
 
-        # 在时间维度上做自注意力，得到聚合的上下文 C
-        sta_flat = sta.reshape(B * N, T, D_sta)
-        q = self.dense_cq(sta_flat).view(B * N, T, self.num_heads, -1)
-        k = self.dense_ck(sta_flat).view(B * N, T, self.num_heads, -1)
-        v = self.dense_cv(sta_flat).view(B * N, T, self.num_heads, -1)
-        attn_out, _ = self.C_attn(q[:, -1:], k, v)
-        attn_out = attn_out.view(B, N, self.qkv_size)
-        C_out = self.dense_co(attn_out)
-        return C_out
-
-    def forward(self, z, z_buffer, C: Optional[torch.Tensor] = None, return_energy=False):
+    def forward(self, z, z_buffer, C: Optional[torch.Tensor] = None, return_energy=False,
+                return_qp=False):
         '''
         在 Z 空间做单步预测。
         Args:
-            z: 当前时间步的 Z (B, N, D)，E2E 训练时就是 S
-            z_buffer: 历史 Z 缓存 (B, T, N, D)
-            C: 静态部分 Z^c (B, N, D')，默认从 z 切片
-            return_energy: 是否返回哈密顿量能量
+            ...
+            return_energy: 是否返回能量对
+            return_qp: 是否返回新鲜 (q, p) 和预测 (q_next, p_next)
         Returns:
-            pred_z_next: 预测的下一时间步 Z (B, N, D)
+            pred_z_next, 可选额外信息。
+            return_energy=True → (…, energy_pair)
+            return_qp=True    → (…, (fresh_q, fresh_p), (q_next, p_next))
+            顺序: pred_z_next, [energy_pair], [fresh_qp], [q_next_p_next]
         '''
         B, N, D = z.shape
         D_sta = self.static_dim
@@ -132,14 +123,20 @@ class SlotPredictor(nn.Module):
         z_dyn = z[:, :, D_sta:]  # (B, N, dynamic_dim)
         z_buffer_dyn = z_buffer[:, :, :, D_sta:]  # (B, T, N, dynamic_dim)
         phys_out = self.physics_module(z_dyn, z_buffer_dyn, C=C,
-                                        return_energy=return_energy)
-        if return_energy:
+                                        return_energy=return_energy,
+                                        return_qp=return_qp)
+
+        if return_energy and return_qp:
+            q_next, p_next, energy_pair, (fresh_q, fresh_p) = phys_out
+        elif return_energy:
             q_next, p_next, energy_pair = phys_out
+        elif return_qp:
+            q_next, p_next, (fresh_q, fresh_p) = phys_out
         else:
             q_next, p_next = phys_out
-            energy_pair = None
+            energy_pair, fresh_q, fresh_p = None, None, None
 
-        # 第四次修改：MLP_Z 只接收 Q_next（不含 C）
+        # 第四次修改：MLP_Z 只接收 Q_next（不含 C），因为 Z^d 应不包含 C 的信息
         next_dyn = self.fusion_mlp(q_next)             # (B, N, dynamic_dim)
 
         # 第四次修改：根据 freeze_C 决定 Z^c 的来源
@@ -155,15 +152,21 @@ class SlotPredictor(nn.Module):
 
         # ============ 融合 ============
         if self.freeze_C:
-            # ST 只修正 D^d 维度，Z^c 冻结为 C 永不修改
             pred_z_next = z_phys.clone()
             pred_z_next[:, :, D_sta:] = pred_z_next[:, :, D_sta:] + st_out[:, :, D_sta:]
         else:
             pred_z_next = z_phys + st_out  # (B, N, D)
 
+        ret = [pred_z_next]
         if return_energy:
-            return pred_z_next, energy_pair
-        return pred_z_next
+            ret.append(energy_pair)
+        if return_qp:
+            ret.append((fresh_q, fresh_p))
+            ret.append((q_next, p_next))
+
+        if len(ret) == 1:
+            return pred_z_next
+        return tuple(ret)
 
     def predict_rollout(self, initial_z, initial_z_buffer, C, rollout_steps):
         '''自回归的 rollout 预测（Z 空间，多步）。'''

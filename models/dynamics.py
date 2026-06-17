@@ -217,17 +217,38 @@ class SlotDynamicsModel(nn.Module):
         pred_Z_list = []
         energy_pairs = []
         cur_Z = Z_t
+        qp_metrics = {"q_next_list": [], "p_next_list": [],
+                      "fresh_q_list": [], "fresh_p_list": []}
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_Z[:, :, :static_dim]
-            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use, return_energy=True)
-            next_Z, ep = out if isinstance(out, tuple) else (out, None)
+            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use,
+                                 return_energy=True, return_qp=True)
+            next_Z, ep, (fresh_q, fresh_p), (q_next, p_next) = out
             pred_Z_list.append(next_Z)
             if ep is not None:
                 energy_pairs.append(ep)
             if burnin + t < buf_sz:
                 Z_buffer[:, burnin + t] = next_Z
             cur_Z = next_Z
+            qp_metrics["fresh_q_list"].append(fresh_q)
+            qp_metrics["fresh_p_list"].append(fresh_p)
+            qp_metrics["q_next_list"].append(q_next)
+            qp_metrics["p_next_list"].append(p_next)
         pred_Z = torch.stack(pred_Z_list, dim=1)
+
+        # 监控：新鲜 q/p 与上一步积分器预测的 q_next/p_next 之间的误差
+        loss_q = torch.tensor(0.0, device=frames.device)
+        loss_p = torch.tensor(0.0, device=frames.device)
+        count = 0
+        for t in range(1, rollout):
+            loss_q = loss_q + (qp_metrics["fresh_q_list"][t].detach() -
+                               qp_metrics["q_next_list"][t - 1].detach()).square().mean()
+            loss_p = loss_p + (qp_metrics["fresh_p_list"][t].detach() -
+                               qp_metrics["p_next_list"][t - 1].detach()).square().mean()
+            count = count + 1
+        if count > 0:
+            loss_q = loss_q / count
+            loss_p = loss_p / count
 
         # Phase 4: Target S（frozen → S，no_grad）— 用于 slot loss 和 decoder target
         with torch.no_grad():
@@ -267,6 +288,10 @@ class SlotDynamicsModel(nn.Module):
             "rev_pred": rev_pred,
             "S_c": Z_c,
             "energy_pairs": energy_pairs if energy_pairs else None,
+            "qp_metrics": {
+                "loss_q": loss_q.item(),
+                "loss_p": loss_p.item(),
+            },
         }
 
     def _forward_jepa(self, frames):

@@ -233,8 +233,8 @@ class SpaceAttentionBlock(nn.Module):
 
 class TimeAttentionBlock(nn.Module):
     '''
-    时间注意力块（p_AttentionBlock），用于跨时间步对 Slot 的时序建模。
-    输入为当前帧和缓存的历史帧，输出作为动量（p）的更新。
+    时间注意力块，用于跨时间步对 Slot 的时序建模。
+    输入为当前帧和缓存的历史帧，输出作为动量（p）的更新，也可以用于计算 C（内容变量）。
     '''
     def __init__(self,
                  embed_dim: int,
@@ -243,7 +243,8 @@ class TimeAttentionBlock(nn.Module):
                  mlp_size: int,
                  pre_norm: bool = False,
                  weight_init=None,
-                 dropout_rate: float = 0.1
+                 dropout_rate: float = 0.1,
+                 zero_init: bool = False   # True 时初始化输出为零（用于 C）
                  ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -258,7 +259,7 @@ class TimeAttentionBlock(nn.Module):
         self.head_dim = qkv_size // num_heads
 
         self.attn = GeneralizedDotProductAttention()
-        # QKV 投影层（时间注意力用）
+        # QKV 投影层
         self.dense_tq = nn.Linear(embed_dim, qkv_size)
         self.dense_tk = nn.Linear(embed_dim, qkv_size)
         self.dense_tv = nn.Linear(embed_dim, qkv_size)
@@ -277,25 +278,66 @@ class TimeAttentionBlock(nn.Module):
             self.att_drop = nn.Dropout(self.dropout_rate)
             self.ff_dropout = nn.Dropout(self.dropout_rate)
 
+        if zero_init:
+            if self.num_heads > 1:
+                nn.init.zeros_(self.dense_to.weight)
+                nn.init.zeros_(self.dense_to.bias)
+            nn.init.zeros_(self.mlp.net[-1].weight)
+            nn.init.zeros_(self.mlp.net[-1].bias)
+
     def forward(self, inputs: Array, buffer: Array,
                 padding_mask: Optional[Array] = None,
-                train: bool = False) -> Array:
+                train: bool = False,
+                query_pos: Optional[int] = None) -> Array:
+        '''
+        Args:
+            inputs: 当前帧 (B, N, D) — 用作 Query
+            buffer: 历史帧缓存 (B, T, N, D) — 用作 Key/Value
+            query_pos: Query 的时间位置，None=默认 T（向后兼容），-1=无 PE
+        '''
         assert inputs.ndim == 3
         del padding_mask, train
-        B, T, N, _ = buffer.shape
+        B, T, N, D = buffer.shape
+
+        # 时间位置编码：加在 Q 和 K 上，不加在 V 上
+        pe_buffer = None
+        pe_query = None
+        if T > 0:
+            half = D // 2
+            if half > 0:
+                freq = 1.0 / (10000.0 ** (torch.arange(0, half, device=buffer.device).float() / half))
+                t_idx = torch.arange(T, device=buffer.device).float().unsqueeze(1)
+                pe_buffer = torch.zeros(T, D, device=buffer.device)
+                pe_buffer[:, 0::2] = torch.sin(t_idx * freq)
+                pe_buffer[:, 1::2] = torch.cos(t_idx * freq)
+                # Query PE: None=位置T（默认），-1=无PE，>=0=指定位置
+                pe_query = torch.zeros(D, device=buffer.device)
+                if query_pos is not None and query_pos < 0:
+                    pass  # pe_query 保持全零
+                else:
+                    t_q = torch.tensor([query_pos if query_pos is not None else T],
+                                       device=buffer.device).float()
+                    pe_query[0::2] = torch.sin(t_q * freq)
+                    pe_query[1::2] = torch.cos(t_q * freq)
+            else:
+                pe_buffer = torch.zeros(T, D, device=buffer.device)
+                pe_query = torch.zeros(D, device=buffer.device)
 
         if self.pre_norm:
-            # 预归一化路径
-            x = self.layernorm_tquery(inputs)              # B, N, D
-            x_buffer = self.layernorm_tquery(buffer)        # B, T, N, D
+            # 预归一化路径：Q/K 加 PE，V 不加
+            x = self.layernorm_tquery(inputs) + pe_query   # B, N, D
+            x_buffer_v = self.layernorm_tquery(buffer)      # B, T, N, D (V: no PE)
+            x_buffer_k = x_buffer_v                         # B, T, N, D
+            if pe_buffer is not None:
+                x_buffer_k = x_buffer_k + pe_buffer[None, :, None, :]
 
-            # 时间注意力：当前帧从历史缓存中聚合信息
             xt = torch.unsqueeze(x, dim=1)                  # B, 1, N, D
             xt = rearrange(xt, 'b t o d -> (b o) t d')     # B*N, 1, D
-            xt_buffer = rearrange(x_buffer, 'b t o d -> (b o) t d')  # B*N, T, D
+            xt_buffer_v = rearrange(x_buffer_v, 'b t o d -> (b o) t d')
+            xt_buffer_k = rearrange(x_buffer_k, 'b t o d -> (b o) t d')
             qt = self.dense_tq(xt).view(xt.shape[0], xt.shape[1], self.num_heads, self.head_dim)
-            kt = self.dense_tk(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
-            vt = self.dense_tv(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            kt = self.dense_tk(xt_buffer_k).view(xt_buffer_k.shape[0], xt_buffer_k.shape[1], self.num_heads, self.head_dim)
+            vt = self.dense_tv(xt_buffer_v).view(xt_buffer_v.shape[0], xt_buffer_v.shape[1], self.num_heads, self.head_dim)
             xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*N, 1, h, d
             if self.num_heads > 1:
                 xt = self.dense_to(xt.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
@@ -312,15 +354,19 @@ class TimeAttentionBlock(nn.Module):
                 z = self.ff_dropout(z)
             z = z + y
         else:
-            # 后归一化路径
-            x = inputs
-            x_buffer = buffer
+            # 后归一化路径：Q/K 加 PE，V 不加
+            x = inputs + pe_query
+            x_buffer_v = buffer                           # B, T, N, D (V: no PE)
+            x_buffer_k = x_buffer_v
+            if pe_buffer is not None:
+                x_buffer_k = x_buffer_k + pe_buffer[None, :, None, :]
             xt = torch.unsqueeze(x, dim=1)                  # B, 1, N, D
             xt = rearrange(xt, 'b t o d -> (b o) t d')     # B*N, 1, D
-            xt_buffer = rearrange(x_buffer, 'b t o d -> (b o) t d')  # B*N, T, D
+            xt_buffer_v = rearrange(x_buffer_v, 'b t o d -> (b o) t d')
+            xt_buffer_k = rearrange(x_buffer_k, 'b t o d -> (b o) t d')
             qt = self.dense_tq(xt).view(xt.shape[0], xt.shape[1], self.num_heads, self.head_dim)
-            kt = self.dense_tk(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
-            vt = self.dense_tv(xt_buffer).view(xt_buffer.shape[0], xt_buffer.shape[1], self.num_heads, self.head_dim)
+            kt = self.dense_tk(xt_buffer_k).view(xt_buffer_k.shape[0], xt_buffer_k.shape[1], self.num_heads, self.head_dim)
+            vt = self.dense_tv(xt_buffer_v).view(xt_buffer_v.shape[0], xt_buffer_v.shape[1], self.num_heads, self.head_dim)
             xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*N, 1, h, d
             if self.num_heads > 1:
                 xt = self.dense_to(xt.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
@@ -622,17 +668,18 @@ class Slot_HamiltonianNet(nn.Module):
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
 
     def forward(self, slot: Array, buffer: Array, C: Optional[Array] = None,
-                return_energy: bool = False):
+                return_energy: bool = False,
+                return_qp: bool = False):
         '''
         Args:
-            slot: 当前时间步的 Slot, shape (B, N, D)
-            buffer: 历史帧缓存, shape (B, T, N, D)
-            C: 静态特征上下文, shape (B, N, D)，由 SlotPiModel 计算并传入
+            ...
             return_energy: 是否返回积分前后的能量对用于 L_energy
+            return_qp: 是否返回 qp_net 输出的新鲜 (q, p)
         Returns:
-            q_next: 下一时间步的 Slot 位置, shape (B, N, D)
-            p_next: 下一时间步的 Slot 动量, shape (B, N, D)
-            如果 return_energy=True，额外返回 (E_before, E_after)
+            q_next, p_next 或带额外信息的元组：
+              return_energy=True → (…, (E_before, E_after))
+              return_qp=True    → (…, (fresh_q, fresh_p))
+              顺序：q_next, p_next, [energy_pair], [fresh_qp]
         '''
         if self.pre_norm:
             slot = self.mlp_norm(slot)
@@ -653,8 +700,13 @@ class Slot_HamiltonianNet(nn.Module):
         if not self.pre_norm:
             q_next = self.mlp_norm(q_next)
 
+        ret = [q_next, p_next]
         if return_energy and C is not None:
             E_after = self.H_net(q_next, p_next, C=C)
-            return q_next, p_next, (E_before, E_after)
+            ret.append((E_before, E_after))
+        if return_qp:
+            ret.append((q, p))
 
-        return q_next, p_next
+        if len(ret) == 2:
+            return q_next, p_next
+        return tuple(ret)
