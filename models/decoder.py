@@ -39,7 +39,7 @@ class SpatialBroadcastDecoder(nn.Module):
         self.out_conv = nn.Conv2d(final_channels, out_c, kernel_size=3,
                                   stride=1, padding=1)
 
-    def forward(self, slots):
+    def forward(self, slots, return_alpha=False):
         B, N, D = slots.shape
         S = self.broadcast_size
 
@@ -62,6 +62,8 @@ class SpatialBroadcastDecoder(nn.Module):
             rgb = torch.sigmoid(out[:, :, :-1])
             blended = (rgb * alpha).sum(dim=1)
             output = blended.view(B, -1, self.img_size, self.img_size)
+            if return_alpha:
+                return output, alpha  # (B, N, 1, H, W)
         else:
             out = out.reshape(B, N, -1, self.img_size, self.img_size)
             output = out.mean(dim=1)

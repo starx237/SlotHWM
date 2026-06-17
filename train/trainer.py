@@ -79,13 +79,6 @@ class Trainer:
         self.jepa = getattr(config, 'jepa', False)
         self.jepa_alpha = getattr(config, 'jepa_alpha', 0.996)
         self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
-        if self.freeze_slot:
-            for name in ['encoder', 'slot_attention', 'decoder']:
-                mod = getattr(self.model, name, None)
-                if mod is not None:
-                    for p in mod.parameters():
-                        p.requires_grad_(False)
-            print(f"Frozen: encoder + slot_attention + decoder (STATM-SAVi)")
         if self.pretrain:
             self.rollout = 0
             print(f"Pretrain mode: burnin={self.burnin}, no rollout")

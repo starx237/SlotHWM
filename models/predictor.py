@@ -6,16 +6,36 @@ from models.attention import GeneralizedDotProductAttention, TimeSpaceTransforme
 from models.misc import MLP
 
 
+class ResidualMLP(nn.Module):
+    '''残差 MLP：forward(x) = x + MLP(x)。零初始化输出层时 ≈ identity。'''
+    def __init__(self, mlp):
+        super().__init__()
+        self.mlp = mlp
+    def forward(self, x):
+        return x + self.mlp(x)
+
 
 class SlotPredictor(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
 
-        # 从配置中获取两个子空间的维度
+        # 维度说明：
+        #   slot_hidden (slot_attention 输出) = static_dim + dynamic_dim (f_z 总维数)
+        #   f_z: S_raw (slot_hidden) ↔ [Z^c(static_dim) | Z₀(dynamic_dim)]
+        #   Z^d = [Z₀ | p], p = pos_enc_dim 维位置编码
+        #   total Z = [Z^c | Z₀ | p], slot_dim = static_dim + dynamic_dim + pos_enc_dim
+        #
+        # Z^d 中的位置编码是 DETERMINISTIC 三角编码，无需可学习参数：
+        #   编码: p = encode_pos_to_zd(centroid, pos_enc_dim)
+        #         centroid = (pos_y, pos_x) 从 slot attention 注意力图计算
+        #   解码: (pos_y, pos_x) = atan2(p[0], p[1]), atan2(p[2], p[3])
+        #         PE_32 = reconstruct_pe(pos_y, pos_x) 无损重建
         self.static_dim = getattr(config, 'static_dim', 128)
-        self.dynamic_dim = getattr(config, 'dynamic_dim', 128)
-        self.slot_dim = self.static_dim + self.dynamic_dim
+        self.dyn_core_dim = getattr(config, 'dynamic_dim', 128)
+        self.pos_enc_dim = getattr(config, 'pos_enc_dim', 8)
+        self.dyn_total_dim = self.dyn_core_dim + self.pos_enc_dim
+        self.slot_dim = self.static_dim + self.dyn_total_dim
         self.hidden_dim = getattr(config, 'hidden_dim', 256)
         self.num_heads = getattr(config, 'num_heads', 4)
         self.qkv_size = getattr(config, 'qkv_size', 128)
@@ -31,15 +51,17 @@ class SlotPredictor(nn.Module):
                 num_heads=self.num_heads,
                 qkv_size=self.qkv_size,
                 mlp_size=self.hidden_dim // 2,
-                pre_norm=True,            # pre-norm 确保 residual 不被 LN 改变
+                pre_norm=True,
                 dropout_rate=self.dropout_rate,
                 zero_init=True,
             )
 
         # === 物理模块：基于哈密顿力学 ===
+        # embed_dim = dyn_total_dim = dyn_core_dim + 2 (pos_y, pos_x)
+        # 积分器在融合了位置信息的 Z^d 空间运动
         self.physics_module = Slot_HamiltonianNet(
             num_slots=self.num_slots,
-            embed_dim=self.dynamic_dim,
+            embed_dim=self.dyn_total_dim,
             static_dim=self.static_dim,
             integrator_method=getattr(config, 'integrator_method', 'Euler'),
             num_heads=self.num_heads,
@@ -69,17 +91,17 @@ class SlotPredictor(nn.Module):
             ) for _ in range(num_spatiotemporal_blocks)
         ])
 
-        # 第四次修改：MLP_Z 只接收 Q_next（不含 C），因为 Z^d 应不包含 C 的信息
-        self.fusion_mlp = MLP(
-            input_size=self.dynamic_dim,
+        # fusion_mlp 将积分器输出的 q_next 映射回 Z^d
+        # ResidualMLP: forward(x) = x + MLP(x)，零初始化时 ≈ identity
+        self.fusion_mlp = ResidualMLP(MLP(
+            input_size=self.dyn_total_dim,
             hidden_size=self.hidden_dim // 2,
-            output_size=self.dynamic_dim,
+            output_size=self.dyn_total_dim,
             num_hidden_layers=2,
             activate_output=False,
-            activation_fn=nn.SiLU,
-        )
-        nn.init.zeros_(self.fusion_mlp.net[-1].weight)
-        nn.init.zeros_(self.fusion_mlp.net[-1].bias)
+        ))
+        nn.init.zeros_(self.fusion_mlp.mlp.net[-1].weight)
+        nn.init.zeros_(self.fusion_mlp.mlp.net[-1].bias)
 
     def compute_C(self, burnin_slots):
         '''
@@ -114,14 +136,14 @@ class SlotPredictor(nn.Module):
         '''
         B, N, D = z.shape
         D_sta = self.static_dim
-        D_dyn = self.dynamic_dim
+        D_dyn = self.dyn_total_dim
 
         if C is None:
             C = z[:, :, :D_sta]
 
         # ============ 物理模块 ============
-        z_dyn = z[:, :, D_sta:]  # (B, N, dynamic_dim)
-        z_buffer_dyn = z_buffer[:, :, :, D_sta:]  # (B, T, N, dynamic_dim)
+        z_dyn = z[:, :, D_sta:]  # (B, N, dyn_total_dim = [Z₀ | p])
+        z_buffer_dyn = z_buffer[:, :, :, D_sta:]  # (B, T, N, dyn_total_dim)
         phys_out = self.physics_module(z_dyn, z_buffer_dyn, C=C,
                                         return_energy=return_energy,
                                         return_qp=return_qp)
@@ -169,7 +191,6 @@ class SlotPredictor(nn.Module):
         return tuple(ret)
 
     def predict_rollout(self, initial_z, initial_z_buffer, C, rollout_steps):
-        '''自回归的 rollout 预测（Z 空间，多步）。'''
         B, N, D = initial_z.shape
         z_buffer = initial_z_buffer
         z = initial_z

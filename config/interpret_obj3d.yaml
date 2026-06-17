@@ -6,7 +6,6 @@ num_workers: 0
 
 pretrain: false
 
-# 时域降采样（原始 25fps → 12.5fps）
 subsample: 2
 
 # 编码器
@@ -17,8 +16,9 @@ encoder_hidden: 64
 
 # Slot Attention
 num_slots: 7
-static_dim: 112
-dynamic_dim: 16
+static_dim: 120
+dynamic_dim: 8
+pos_enc_dim: 8
 slot_hidden: 128
 
 # 解码器
@@ -41,8 +41,8 @@ integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
 # 推理帧数
-burnin_frames: 1
-rollout_frames: 1
+burnin_frames: 6
+rollout_frames: 10
 
 # C 冻结模式（必须与 checkpoint 训练时一致）
 freeze_C: true

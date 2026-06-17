@@ -1,15 +1,47 @@
 import torch
 import torch.nn.functional as F
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 
-def find_background_slot(attn_maps: torch.Tensor) -> int:
-    attn = attn_maps[0, 0]
-    variances = attn.var(dim=-1)
-    return variances.argmin().item()
+def find_foreground_slots(alpha_maps: torch.Tensor, n_slots: int = 2) -> Tuple[List[int], int]:
+    """从 alpha mask 中找前景 slot 和背景 slot。
+    alpha_maps: (B, N, 1, H, W), B=1
+    步骤:
+      1. 总 alpha 和最大的 = 背景（覆盖像素最多）
+      2. 其余 slot 按空间集中度（方差）排序
+      3. 取前 n_slots 个集中度最高的作为前景
+    Returns: (foreground_slots, background_idx)
+    """
+    alpha = alpha_maps[0, :, 0]  # (N, H, W)
+    N = alpha.shape[0]
+    flat = alpha.view(N, -1)  # (N, H*W)
+    total = flat.sum(dim=-1)  # (N,)
+    bg_idx = total.argmax().item()
+
+    scores = flat.var(dim=-1)
+    candidates = [(i, scores[i].item()) for i in range(N) if i != bg_idx]
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    fg_slots = [i for i, _ in candidates[:n_slots]]
+    return fg_slots, bg_idx
 
 
-def pick_foreground_pairs(bg_idx: int, num_slots: int, n_pairs: int = 1) -> List[Tuple[int, int]]:
+def compute_slot_similarity(attn_maps: torch.Tensor) -> torch.Tensor:
+    """计算 slot attention 图的余弦相似度矩阵。
+    attn_maps: (1, 1, N, N_feat)
+    Returns: (N, N) 相似度矩阵
+    """
+    attn = attn_maps[0, 0]  # (N, N_feat)
+    norm = attn / (attn.norm(dim=-1, keepdim=True) + 1e-8)
+    return norm @ norm.T
+
+
+def pick_foreground_pairs(bg_idx: int, num_slots: int, n_pairs: int = 1,
+                          sim_matrix: Optional[torch.Tensor] = None,
+                          sim_threshold: float = 0.3) -> List[Tuple[int, int]]:
+    """从前景 slot 中挑选可交换对。
+    如果提供了 sim_matrix，只选择 attention 图差异大的 pair（cos sim < threshold），
+    避免交换注意同一物体的 slot。
+    """
     foreground = [i for i in range(num_slots) if i != bg_idx]
     if len(foreground) < 2:
         return []
@@ -17,45 +49,88 @@ def pick_foreground_pairs(bg_idx: int, num_slots: int, n_pairs: int = 1) -> List
     for i in range(0, len(foreground) - 1, 2):
         if len(pairs) >= n_pairs:
             break
-        pairs.append((foreground[i], foreground[i + 1]))
+        a, b = foreground[i], foreground[i + 1]
+        if sim_matrix is not None:
+            sim = sim_matrix[a, b].item()
+            if sim > sim_threshold:
+                continue
+        pairs.append((a, b))
     return pairs
 
 
+def filter_active_slots(attn_maps: torch.Tensor, alpha_threshold: float = 0.05) -> List[int]:
+    """标记活跃 slot（attention 不是均匀分布，即有实际关注的区域）。
+    均匀分布的 slot 视为空，不参与交换。
+    """
+    attn = attn_maps[0, 0]
+    variances = attn.var(dim=-1)
+    bg_idx = variances.argmin().item()
+    active = []
+    bg_var = variances[bg_idx].item()
+    for i in range(attn.shape[0]):
+        if i == bg_idx:
+            continue
+        if variances[i].item() > bg_var * (1.0 + alpha_threshold):
+            active.append(i)
+    return active
+
+
 @torch.no_grad()
-def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device, debug=True):
+def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device,
+                       debug=True, mode='swap'):
     B = frames.shape[0]
     static_dim = getattr(model.config, 'static_dim', 128)
-    dynamic_dim = getattr(model.config, 'dynamic_dim', 128)
-    slot_dim = static_dim + dynamic_dim
+    dyn_core_dim = getattr(model.config, 'dynamic_dim', 128)
+    pos_enc_dim = getattr(model.config, 'pos_enc_dim', 8)
+    slot_dim = static_dim + dyn_core_dim + pos_enc_dim
     freeze_C = getattr(model.config, 'freeze_C', False)
     num_slots = getattr(model.config, 'num_slots', 7)
     buf_sz = getattr(model.config, 'buffer_len', burnin + rollout)
+    D_pos = model.POS_EMBED_DIM
 
     if debug:
-        print(f"\n  [debug] static_dim={static_dim}, dynamic_dim={dynamic_dim}, freeze_C={freeze_C}")
+        print(f"\n  [debug] slot_dim={slot_dim}, freeze_C={freeze_C}, mode={mode}")
 
     enc_features = model.encoder(frames)
     _, _, N_feat, _ = enc_features.shape
     grid_sz = int(N_feat ** 0.5)
 
     Z_buffer = torch.zeros(B, buf_sz, num_slots, slot_dim, device=device)
-    burnin_attn = []
     slots = None
     for t in range(burnin):
         feat_t = enc_features[:, t]
         slots, attn = model._sa(feat_t, slots, t)
-        slots = model._add_sd_pos_encoding(slots, attn, grid_sz)
-        Z_t = model.f_z(slots)
-        Z_buffer[:, t] = Z_t
-        burnin_attn.append(attn)
+        centroid = model._compute_slot_centroid(attn, grid_sz)
+        pe_32 = model._reconstruct_pe(centroid)
+        slots_pe = slots.clone()
+        slots_pe[:, :, -D_pos:] = slots_pe[:, :, -D_pos:] + pe_32
+        Z_core = model.f_z(slots)
+        p = model._encode_pos_to_zd(centroid, pos_enc_dim)
+        Z_buffer[:, t] = torch.cat([Z_core, p], dim=-1)
 
     burnin_Z = Z_buffer[:, :burnin]
 
-    last_attn = burnin_attn[-1]
-    bg_idx = find_background_slot(last_attn)
+    # 前景/背景检测（用最后一帧 burnin decode 的 alpha）
+    with torch.no_grad():
+        last_P = model._decode_pe_from_zd(burnin_Z[:, -1, :, static_dim + dyn_core_dim:])
+        last_S_raw = model.f_z.inverse(burnin_Z[:, -1, :, :static_dim + dyn_core_dim])
+        last_S = last_S_raw.clone()
+        last_S[:, :, -D_pos:] = last_S[:, :, -D_pos:] + last_P
+        _, last_alpha = model.decoder(last_S, return_alpha=True)
+    fg_slots, bg_idx = find_foreground_slots(last_alpha, n_slots=2)
 
     if swap_pairs is None:
-        swap_pairs = pick_foreground_pairs(bg_idx, num_slots, n_pairs=1)
+        if len(fg_slots) >= 2:
+            swap_pairs = [(fg_slots[0], fg_slots[1])]
+        else:
+            swap_pairs = []
+    elif isinstance(swap_pairs, list) and len(swap_pairs) > 0:
+        pass
+    else:
+        swap_pairs = []
+
+    if debug:
+        print(f"  [debug] bg_idx={bg_idx}, fg_slots={fg_slots}, swap_pairs={swap_pairs}")
 
     global_C = model.predictor.compute_C(burnin_Z) if freeze_C else None
 
@@ -67,7 +142,7 @@ def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device, debug
 
     def rollout_fn(c_mod_fn=None):
         pred_Z_list = []
-        cur_Z = Z_t
+        cur_Z = Z_buffer[:, burnin - 1]
         cur_buffer = Z_buffer.clone()
         for step in range(rollout):
             if freeze_C:
@@ -77,10 +152,6 @@ def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device, debug
             if c_mod_fn is not None:
                 B_, N_ = cur_Z.shape[:2]
                 C_use = c_mod_fn(C_use, cur_Z, step)
-                if debug and step == 0 and freeze_C:
-                    for a, b in swap_pairs:
-                        cd = (C_use[0, a] - C_use[0, b]).norm().item()
-                        print(f"  [debug] after swap: ||C{a}-C{b}|| = {cd:.6f}")
             out = model.predictor(cur_Z, cur_buffer[:, :burnin + step], C=C_use, return_energy=False)
             next_Z = out
             pred_Z_list.append(next_Z)
@@ -97,21 +168,35 @@ def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device, debug
             tmp = swapped[:, a].clone()
             swapped[:, a] = swapped[:, b]
             swapped[:, b] = tmp
-        return torch.zeros_like(swapped)
+        return swapped
 
-    swapped_Z = rollout_fn(c_mod_fn=swap_fn)
+    def ablate_fn(C_use, cur_z, step):
+        ablated = C_use.clone()
+        for a, _ in swap_pairs:
+            ablated[:, a] = 0.0
+        return ablated
 
-    z_diff = (normal_Z - swapped_Z).norm().item()
-    if debug:
-        print(f"  [debug] ||normal_Z - swapped_Z|| = {z_diff:.6f}")
-        if z_diff < 1e-8:
-            print(f"  [debug] WARNING: normal and swapped Z are identical!")
+    mod_fn = ablate_fn if mode == 'ablate' else swap_fn
+    modified_Z = rollout_fn(c_mod_fn=mod_fn)
 
-    pred_S_normal = torch.stack([model.f_z.inverse(normal_Z[:, t]) for t in range(rollout)], dim=1)
-    pred_S_swapped = torch.stack([model.f_z.inverse(swapped_Z[:, t]) for t in range(rollout)], dim=1)
+    # 解码：Z_core → f_z⁻¹ → S_raw, p → _decode_pe_from_zd → PE_32 → S = S_raw + PE_32
+    def decode(z_tensor):
+        frames = []
+        alphas = []
+        for t in range(rollout):
+            Z_core = z_tensor[:, t, :, :static_dim + dyn_core_dim]
+            p_pred = z_tensor[:, t, :, static_dim + dyn_core_dim:]
+            S_raw = model.f_z.inverse(Z_core)
+            P_recon = model._decode_pe_from_zd(p_pred)
+            S = S_raw.clone()
+            S[:, :, -D_pos:] = S[:, :, -D_pos:] + P_recon
+            out, alpha = model.decoder(S, return_alpha=True)
+            frames.append(out)
+            alphas.append(alpha)
+        return torch.stack(frames, dim=1), torch.stack(alphas, dim=1)
 
-    dec_normal = torch.stack([model.decoder(pred_S_normal[:, t]) for t in range(rollout)], dim=1)
-    dec_swapped = torch.stack([model.decoder(pred_S_swapped[:, t]) for t in range(rollout)], dim=1)
+    dec_normal, dec_normal_alpha = decode(normal_Z)
+    dec_modified, dec_modified_alpha = decode(modified_Z)
 
     with torch.no_grad():
         target_S_list = []
@@ -126,10 +211,13 @@ def run_interpret_swap(model, frames, swap_pairs, burnin, rollout, device, debug
 
     return {
         "video_normal": dec_normal,
-        "video_swapped": dec_swapped,
+        "video_modified": dec_modified,
         "video_target": dec_target,
+        "slot_alpha": dec_normal_alpha,
+        "slot_alpha_modified": dec_modified_alpha,
         "bg_idx": bg_idx,
         "swap_pairs": swap_pairs,
+        "mode": mode,
     }
 
 
@@ -137,13 +225,17 @@ def visualize_swap_result(result_dict, burnin, rollout, save_path):
     from PIL import Image, ImageDraw, ImageFont
 
     normal_vid = result_dict["video_normal"]
-    swapped_vid = result_dict["video_swapped"]
+    modified_vid = result_dict["video_modified"]
     target_vid = result_dict["video_target"]
+    slot_alpha = result_dict["slot_alpha"]
+    slot_alpha_modified = result_dict["slot_alpha_modified"]
     bg_idx = result_dict["bg_idx"]
     swap_pairs = result_dict["swap_pairs"]
+    mode = result_dict.get("mode", "swap")
 
     n_cols = rollout
-    n_rows = 5
+    extra_rows = 2 if swap_pairs else 0
+    n_rows = 5 + 2 * extra_rows  # normal alpha + modified alpha
     S = 64
     font = ImageFont.load_default()
     W = n_cols * S
@@ -156,33 +248,65 @@ def visualize_swap_result(result_dict, burnin, rollout, save_path):
         im = Image.fromarray((arr * 255).astype('uint8'))
         canvas.paste(im, (col * S, row * S))
 
+    def put_heatmap(tensor, row, col):
+        arr = tensor.detach().cpu().clamp(0, 1).numpy()
+        arr = (arr * 255).astype('uint8')
+        im = Image.fromarray(arr, mode='L')
+        canvas.paste(im, (col * S, row * S))
+
     for t in range(rollout):
         put_img(target_vid[0, t], 0, t)
         put_img(normal_vid[0, t], 1, t)
-        put_img(swapped_vid[0, t], 2, t)
+        put_img(modified_vid[0, t], 2, t)
 
-        diff = (normal_vid[0, t] - swapped_vid[0, t]).abs().mean(dim=0, keepdim=True)
+        diff = (normal_vid[0, t] - modified_vid[0, t]).abs().mean(dim=0, keepdim=True)
         diff_amp = (diff * 10.0).clamp(0, 1).repeat(3, 1, 1)
         put_img(diff_amp, 3, t)
 
-        mse_swap_normal = F.mse_loss(normal_vid[0, t], swapped_vid[0, t]).item()
-        draw.text((t * S + 2, 3 * S + 2), f"diff={mse_swap_normal:.6f}", fill=(0, 0, 0), font=font)
+        mse = F.mse_loss(normal_vid[0, t], modified_vid[0, t]).item()
+        draw.text((t * S + 2, 3 * S + 2), f"diff={mse:.6f}", fill=(0, 0, 0), font=font)
 
     for t in range(min(rollout, burnin)):
         draw.text((t * S + 2, 0 * S + 2), "GT", fill=(255, 255, 255), font=font)
 
-    labels = ['GT Rollout', 'Normal Pred', 'Swapped Pred', '|N-S|×10', 'MSE vs GT']
+    mode_label = f"{mode.upper()} Pred"
+    labels = ['GT Rollout', 'Normal Pred', mode_label, '|N-M|×10', 'MSE vs GT',
+              '', '']
     for i, label in enumerate(labels):
         draw.text((2, i * S + 2), label, fill=(0, 0, 0), font=font)
 
-    for t in range(rollout):
-        mn = F.mse_loss(normal_vid[0, t], target_vid[0, t]).item()
-        ms = F.mse_loss(swapped_vid[0, t], target_vid[0, t]).item()
-        draw.text((t * S + 2, 4 * S + 2), f"N={mn:.4f}", fill=(0, 0, 0), font=font)
-        draw.text((t * S + 2, 4 * S + S // 2 + 2), f"S={ms:.4f}", fill=(0, 0, 0), font=font)
+    # Alpha masks
+    target_slots = []
+    for a, b in swap_pairs:
+        target_slots.extend([a, b])
+    target_slots = target_slots[:2]
 
-    swap_desc = f"BG slot={bg_idx}, swap={swap_pairs}"
-    draw.text((2, H - 14), swap_desc, fill=(128, 0, 128), font=font)
+    # Normal alpha rows
+    for row_idx, slot_idx in enumerate(target_slots):
+        for t in range(rollout):
+            alpha_t = slot_alpha[0, t, slot_idx, 0]
+            alpha_t = alpha_t / (alpha_t.max() + 1e-8)
+            put_heatmap(alpha_t, 5 + row_idx, t)
+        draw.text((2, (5 + row_idx) * S + 2),
+                  f"S{slot_idx} α (norm)", fill=(255, 0, 0), font=font)
+
+    # Modified alpha rows
+    for row_idx, slot_idx in enumerate(target_slots):
+        for t in range(rollout):
+            alpha_t = slot_alpha_modified[0, t, slot_idx, 0]
+            alpha_t = alpha_t / (alpha_t.max() + 1e-8)
+            put_heatmap(alpha_t, 5 + extra_rows + row_idx, t)
+        draw.text((2, (5 + extra_rows + row_idx) * S + 2),
+                  f"S{slot_idx} α ({mode})", fill=(255, 0, 0), font=font)
+
+    for t in range(rollout):
+        m_normal = F.mse_loss(normal_vid[0, t], target_vid[0, t]).item()
+        m_modified = F.mse_loss(modified_vid[0, t], target_vid[0, t]).item()
+        draw.text((t * S + 2, 4 * S + 2), f"N={m_normal:.4f}", fill=(0, 0, 0), font=font)
+        draw.text((t * S + 2, 4 * S + S // 2 + 2), f"M={m_modified:.4f}", fill=(0, 0, 0), font=font)
+
+    info = f"BG slot={bg_idx}, mode={mode}, target_slots={list(swap_pairs[:2])}"
+    draw.text((2, H - 14), info, fill=(128, 0, 128), font=font)
 
     canvas.save(save_path)
     return save_path

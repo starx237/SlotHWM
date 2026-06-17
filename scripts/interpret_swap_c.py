@@ -22,6 +22,8 @@ def main():
     parser.add_argument('--swap_pairs', type=int, nargs=2, action='append', default=None,
                         help='Manual swap pair (e.g. --swap_pairs 1 2). Auto-selected if not given.')
     parser.add_argument('--debug', action='store_true', help='Print debug info')
+    parser.add_argument('--mode', choices=['swap', 'ablate'], default='swap',
+                        help="'swap'=交换 C, 'ablate'=将指定 slot 的 C 置零")
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -73,36 +75,37 @@ def main():
 
             swap_pairs = args.swap_pairs
             result = run_interpret_swap(model, frames, swap_pairs, burnin, rollout,
-                                        device, debug=args.debug)
+                                        device, debug=args.debug, mode=args.mode)
             results.append(result)
 
     for s, res in enumerate(results):
         target = res["video_target"]
         normal = res["video_normal"]
-        swapped = res["video_swapped"]
+        modified = res["video_modified"]
         bg = res["bg_idx"]
         pairs = res["swap_pairs"]
+        mode = res.get("mode", "swap")
 
         print(f"\n{'='*60}")
-        print(f"Sample {s}: BG slot={bg}, swap pairs={pairs}")
+        print(f"Sample {s}: BG slot={bg}, mode={mode}, target_slots={pairs}")
         print(f"{'='*60}")
-        header = f"{'Step':>6} {'N_GT_MSE':>12} {'S_GT_MSE':>12} {'D_GT':>10}   {'N_S_MSE':>12}"
+        header = f"{'Step':>6} {'N_GT_MSE':>12} {'M_GT_MSE':>12} {'D_GT':>10}   {'N_M_MSE':>12}"
         print(header)
         print("-" * 55)
-        total_n, total_s, total_ns = 0.0, 0.0, 0.0
+        total_n, total_m, total_nm = 0.0, 0.0, 0.0
         for t in range(rollout):
             mn = F.mse_loss(normal[0, t], target[0, t]).item()
-            ms = F.mse_loss(swapped[0, t], target[0, t]).item()
-            mns = F.mse_loss(normal[0, t], swapped[0, t]).item()
+            mm = F.mse_loss(modified[0, t], target[0, t]).item()
+            mnm = F.mse_loss(normal[0, t], modified[0, t]).item()
             total_n += mn
-            total_s += ms
-            total_ns += mns
-            print(f"{t:>6d} {mn:>12.6f} {ms:>12.6f} {ms-mn:>+10.6f}   {mns:>12.8f}")
+            total_m += mm
+            total_nm += mnm
+            print(f"{t:>6d} {mn:>12.6f} {mm:>12.6f} {mm-mn:>+10.6f}   {mnm:>12.8f}")
         avg_n = total_n / rollout
-        avg_s = total_s / rollout
-        avg_ns = total_ns / rollout
+        avg_m = total_m / rollout
+        avg_nm = total_nm / rollout
         print("-" * 55)
-        print(f"{'Avg':>6} {avg_n:>12.6f} {avg_s:>12.6f} {avg_s-avg_n:>+10.6f}   {avg_ns:>12.8f}")
+        print(f"{'Avg':>6} {avg_n:>12.6f} {avg_m:>12.6f} {avg_m-avg_n:>+10.6f}   {avg_nm:>12.8f}")
 
         out_path = os.path.join(viz_dir, f'sample_{s}.png')
         visualize_swap_result(res, burnin, rollout, out_path)
