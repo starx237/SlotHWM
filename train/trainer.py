@@ -74,11 +74,14 @@ class Trainer:
         self.max_encoder_gnorm = getattr(config, 'max_encoder_gnorm', 0.0)
         self.max_decoder_gnorm = getattr(config, 'max_decoder_gnorm', 0.0)
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
+        self.lambda_pos = getattr(config, 'lambda_pos', 0.0)
+        self.lambda_cos = getattr(config, 'lambda_cos', 0.0)
         self.pretrain = getattr(config, 'pretrain', False)
         self.freeze_slot = getattr(config, 'freeze_slot', False)
         self.jepa = getattr(config, 'jepa', False)
         self.jepa_alpha = getattr(config, 'jepa_alpha', 0.996)
         self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
+        self.post_save_callback = getattr(config, 'post_save_callback', None)
         if self.pretrain:
             self.rollout = 0
             print(f"Pretrain mode: burnin={self.burnin}, no rollout")
@@ -134,12 +137,47 @@ class Trainer:
 
         if self.pretrain or self.rollout == 0:
             total_grad = recon_burnin_grad
+            extra_loss = 0.0
             aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0, "loss_q": 0.0, "loss_p": 0.0}
-            with torch.no_grad():
-                aux['slot_var_across'] = out["slots"]["corrected"].var(dim=2, unbiased=False).mean().item()
+
+            if self.lambda_pos > 0 or self.lambda_cos > 0:
+                slots = out["slots"]["corrected"][:, 0]
+                B, N, D = slots.shape
+
+                if self.lambda_cos > 0:
+                    attn = out["attn"]
+                    attn_dot = torch.bmm(attn, attn.transpose(1, 2))
+                    diag = torch.eye(N, device=slots.device)
+                    off_diag = (attn_dot * (1 - diag.unsqueeze(0))).sum(dim=[-2, -1])
+                    loss_cos = off_diag.mean() / (N * (N - 1))
+                    extra_loss = extra_loss + self.lambda_cos * loss_cos
+                    aux['loss_cos'] = (self.lambda_cos * loss_cos).item()
+
+                if self.lambda_pos > 0:
+                    slots_detached = out["slots"]["corrected"][:, 0].detach()
+                    _, alpha, _ = self.model.decoder(slots_detached, return_rgb=True)
+                    Sp = slots_detached[:, :, -3:-1]
+                    H, W = alpha.shape[-2:]
+                    gy, gx = torch.meshgrid(
+                        torch.linspace(-1, 1, H, device=slots_detached.device),
+                        torch.linspace(-1, 1, W, device=slots_detached.device),
+                        indexing='ij',
+                    )
+                    a = alpha.squeeze(2)
+                    denom = a.sum(dim=[-2, -1]) + 1e-8
+                    cx = (a * gx).sum(dim=[-2, -1]) / denom
+                    cy = (a * gy).sum(dim=[-2, -1]) / denom
+                    centroid = torch.stack([cx, cy], dim=-1)
+                    loss_pos = F.mse_loss(centroid, Sp)
+                    extra_loss = extra_loss + self.lambda_pos * loss_pos
+                    aux['loss_pos'] = (self.lambda_pos * loss_pos).item()
+
+            total_grad = recon_burnin_grad + extra_loss
             aux['recon_burnin'] = recon_burnin_val.item()
             aux['recon_rollout'] = 0.0
-            aux['total'] = recon_burnin_val.item()
+            with torch.no_grad():
+                aux['slot_var_across'] = out["slots"]["corrected"].var(dim=2, unbiased=False).mean().item()
+            aux['total'] = recon_burnin_val.item() + (extra_loss.item() if isinstance(extra_loss, torch.Tensor) else extra_loss)
             aux['total_scaled'] = total_grad.item()
             aux['rollout_actual'] = 0
             return total_grad, aux
@@ -319,15 +357,17 @@ class Trainer:
             if self.wandb.enabled:
                 self.wandb.log({f"eval/recon_{idx}": self.wandb.wandb.Image(path)}, step=step)
 
-    def _cleanup_old_checkpoints(self):
-        '''只保留最近的 keep_last 个存档（按 step 数值排序）。'''
+    def _cleanup_old_checkpoints(self, current_step):
+        '''只保留当前步数往前最近的 keep_last 个存档，删除落后/未来的存档。'''
         if self.keep_last <= 0:
             return
         ckpts = sorted(glob.glob(os.path.join(self.ckpt_dir, "step_*.pt")),
                        key=lambda p: int(os.path.basename(p).replace('step_', '').replace('.pt', '')))
-        while len(ckpts) > self.keep_last:
-            os.remove(ckpts[0])
-            ckpts = ckpts[1:]
+        keep_threshold = current_step - self.keep_last * self.save_every
+        for fp in ckpts:
+            step = int(os.path.basename(fp).replace('step_', '').replace('.pt', ''))
+            if step <= keep_threshold:
+                os.remove(fp)
 
     @staticmethod
     def _match_and_load(model_state, ckpt_state):
@@ -479,6 +519,10 @@ class Trainer:
                     self.writer.add_scalar("loss/static", aux['static_loss']*10, global_step)
                     self.writer.add_scalar("loss/rev", aux['rev_loss']*10, global_step)
                     self.writer.add_scalar("loss/energy", aux['energy_loss']*10, global_step)
+                    if 'loss_pos' in aux:
+                        self.writer.add_scalar("loss/pos", aux['loss_pos']*10, global_step)
+                    if 'loss_cos' in aux:
+                        self.writer.add_scalar("loss/cos", aux['loss_cos']*10, global_step)
                     self.writer.add_scalar("lr", lr, global_step)
                     self.writer.add_scalar("rev_weight", gamma, global_step)
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
@@ -507,6 +551,9 @@ class Trainer:
                         "train/grad_norm": grad_norm,
                         "train/rollout_actual": aux.get('rollout_actual', self.rollout),
                     }
+                    for k in ['loss_pos', 'loss_cos']:
+                        if k in aux:
+                            log_dict[f"loss/{k}"] = aux[k]*10
                     for k in monitor_keys:
                         if k in aux:
                             log_dict[k] = aux[k]
@@ -516,7 +563,9 @@ class Trainer:
                     self.save_checkpoint(
                         os.path.join(self.ckpt_dir, f"step_{global_step}.pt"),
                         global_step, loss_val)
-                    self._cleanup_old_checkpoints()
+                    self._cleanup_old_checkpoints(global_step)
+                    if self.post_save_callback:
+                        self.post_save_callback(global_step)
 
                 best_candidate = aux.get('total', loss_val)
                 if best_candidate < self.best_loss:

@@ -1,0 +1,67 @@
+# ISA 预训练配置 — OBJ3D
+dataset: "obj3d"
+data_root: "./data/obj3d"
+num_workers: 4
+
+pretrain: true
+
+subsample: 2
+
+# 编码器
+encoder_type: "cnn"
+in_channels: 3
+img_size: 64
+encoder_hidden: 64
+feat_dim: 64
+
+# Slot Attention (ISA: Translation + Scale Equivariant)
+num_slots: 6
+appearance_dim: 64
+slot_hidden: 128
+qkv_size: 64
+slot_iters: 3
+sa_mlp_size: 128
+grid_enc_hidden: 128
+scales_factor: 5.0
+init_with_fixed_scale: null
+add_rel_pos_to_values: true
+softmax_temperature: 1.0
+append_statistics: false
+
+# 解码器
+decoder_hidden: 64
+broadcast_size: 16
+
+# 训练
+num_steps: 200000
+batch_size: 64
+learning_rate: 0.0004
+weight_decay: 0
+max_grad_norm: 0.05
+burnin_frames: 1
+burnin_iters: 3
+rollout_iters: 1
+slide_stride: 4
+warmup_steps: 10000
+
+# 损失权重
+lambda_recon_burnin: 1.0
+lambda_recon_rollout: 0.0
+lambda_pos: 0.1
+lambda_cos: 0.01
+
+# 日志与存档
+log_every: 20
+eval_every_epochs: 3
+save_every: 1000
+keep_last_checkpoints: 100
+workdir: "./experiments/isa_obj3d"
+
+# 断点续训
+resume: true
+resume_step: 30000
+
+# cd /autodl-fs/data/SlotHWM && \
+#   python -u isa_pretrain/train_isa_pretrain.py \
+#     --config isa_pretrain/config/isa_obj3d.yaml \
+#     --workdir ./experiments/isa_obj3d

@@ -44,19 +44,17 @@ class FrameEncoder(nn.Module):
 
 
 class CNNBackbone(nn.Module):
-    '''CNN 骨干网络，由5层卷积组成，用于提取图像特征'''
-    def __init__(self, in_channels=3, hidden_channels=64, out_dim=128):
+    '''CNN 骨干网络，由4层卷积组成，输出16×16特征图'''
+    def __init__(self, in_channels=3, hidden_channels=64, out_dim=64):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, hidden_channels, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
             nn.Conv2d(hidden_channels, hidden_channels, kernel_size=5, stride=2, padding=2),
             nn.ReLU(),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=5, stride=2, padding=2),
+            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=5, stride=1, padding=2),
             nn.ReLU(),
-            nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(hidden_channels, out_dim, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(hidden_channels, out_dim, kernel_size=5, stride=1, padding=2),
             nn.ReLU(),
         )
 
@@ -66,7 +64,7 @@ class CNNBackbone(nn.Module):
 
 class CNNEncoder(FrameEncoder):
     '''基于 CNN 的编码器，使用 CNNBackbone 提取特征'''
-    def __init__(self, in_channels=3, hidden_channels=64, out_dim=128,
+    def __init__(self, in_channels=3, hidden_channels=64, out_dim=64,
                  img_size=64, pos_embedding=None, reduction="flatten"):
         backbone = CNNBackbone(in_channels, hidden_channels, out_dim)
         super().__init__(backbone, pos_embedding, reduction)

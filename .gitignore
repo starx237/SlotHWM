@@ -9,11 +9,14 @@ issue.md
 slot_debug_report.md
 statm_bug.md
 architecture.md
+*.md
+!README.md
 
 # Logs
 *.log
 log.txt
 scripts/log.txt
+*.txt
 
 # Python
 __pycache__/
