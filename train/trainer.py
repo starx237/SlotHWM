@@ -76,7 +76,8 @@ class Trainer:
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
         self.lambda_pos = getattr(config, 'lambda_pos', 0.0)
         self.lambda_cos = getattr(config, 'lambda_cos', 0.0)
-        self.train_gru_only = getattr(config, 'train_gru_only', False)
+        self.continue_pretrain = getattr(config, 'continue_pretrain', False)
+        self.detach_cospos = getattr(config, 'detach_cospos', False)
         self.pretrain = getattr(config, 'pretrain', False)
         self.freeze_slot = getattr(config, 'freeze_slot', False)
         self.jepa = getattr(config, 'jepa', False)
@@ -132,16 +133,17 @@ class Trainer:
         target_rollout = frames[:, self.burnin:self.burnin + self.rollout] if self.rollout > 0 else None
 
         # 重建损失（原始系数用于 aux，ratio 缩放用于梯度）
-        if self.train_gru_only and self.burnin > 1:
-            mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
-            w0 = 0.4
-            w_rest = (1.0 - w0) / (self.burnin - 1)
-            weights = torch.full((self.burnin,), w_rest, device=video_burnin.device)
-            weights[0] = w0
-            recon_burnin_val = self.lambda_recon_burnin * (mse_per_frame * weights.unsqueeze(0)).mean()
-        else:
-            recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
-                video_burnin, target_burnin)
+        # continue_pretrain frame-weighted loss disabled: use uniform MSE
+        # if self.continue_pretrain and self.burnin > 1: ...
+        #     mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
+        #     w0 = 0.4
+        #     w_rest = (1.0 - w0) / (self.burnin - 1)
+        #     weights = torch.full((self.burnin,), w_rest, device=video_burnin.device)
+        #     weights[0] = w0
+        #     recon_burnin_val = self.lambda_recon_burnin * (mse_per_frame * weights.unsqueeze(0)).mean()
+        # else:
+        recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
+            video_burnin, target_burnin)
         recon_burnin_grad = recon_burnin_val * ratios["burnin"]
 
         if self.pretrain or self.rollout == 0:
@@ -160,7 +162,7 @@ class Trainer:
 
                     if self.lambda_cos > 0:
                         attn_t = out["attn"][:, t]
-                        if self.train_gru_only:
+                        if self.detach_cospos:
                             attn_t = attn_t.detach()
                         attn_dot = torch.bmm(attn_t, attn_t.transpose(1, 2))
                         diag = torch.eye(N, device=slots_t.device)
@@ -170,7 +172,7 @@ class Trainer:
 
                     if self.lambda_pos > 0:
                         alpha_t = out["alpha"][:, :, t]
-                        if self.train_gru_only:
+                        if self.detach_cospos:
                             alpha_t = alpha_t.detach()
                         Sp = slots_t[:, :, -3:-1]
                         H, W = alpha_t.shape[-2:]

@@ -21,6 +21,9 @@ appearance_dim: 64
 slot_hidden: 67
 sa_qkv_size: 64
 slot_iters: 3
+iters_first: 3
+iters_rest: 1
+disable_gru: false  # reserved
 sa_mlp_size: 128
 grid_enc_hidden: 128
 scales_factor: 5.0
@@ -39,6 +42,7 @@ broadcast_size: 16
 
 # 物理模块
 hidden_dim: 256
+gru2_hidden_dim: 64
 num_heads: 4
 qkv_size: 128
 mlp_size: 256
@@ -105,4 +109,5 @@ pretrained_path: "./pretrained/obj3d/checkpoints/best.pt"
 freeze_C: true
 
 # 仅训练 SA GRU+MLP（加载单帧 checkpoint 后做多帧 burnin 微调）
-train_gru_only: false
+continue_pretrain: false
+detach_cospos: false

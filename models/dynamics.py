@@ -98,6 +98,11 @@ class SlotDynamicsModel(nn.Module):
         self.grl = GradientReversal()
         self.mlp_rev = nn.Linear(self.dynamic_dim, self.static_dim)
 
+        # GRU2: 帧间 appearance 残差预测（从上一帧appearance预测下一帧appearance初值）
+        self.gru2_hidden_dim = getattr(config, 'gru2_hidden_dim', 64)
+        self.gru2 = nn.GRUCell(self.appearance_dim, self.gru2_hidden_dim)
+        self.gru2_proj = nn.Linear(self.gru2_hidden_dim, self.appearance_dim)
+
         # JEPA 组件
         if self.jepa:
             if enc_type == 'cnn':
@@ -146,15 +151,14 @@ class SlotDynamicsModel(nn.Module):
                         p.requires_grad_(False)
             print("Frozen: encoder + slot_attention + decoder (ISA)")
 
-        if getattr(config, 'train_gru_only', False):
+        if getattr(config, 'continue_pretrain', False):
             for p in self.encoder.parameters():
                 p.requires_grad_(False)
             for p in self.decoder.parameters():
                 p.requires_grad_(False)
-            for name, p in self.slot_attention.named_parameters():
-                if 'gru' not in name and 'mlp' not in name:
-                    p.requires_grad_(False)
-            print("train_gru_only: encoder+decoder frozen, SA only GRU+MLP trainable")
+            for p in self.slot_attention.parameters():
+                p.requires_grad_(False)
+            print("continue_pretrain: encoder+decoder+slot_attention frozen, GRU2 trainable")
 
     def _encode_features(self, frames):
         B, T, C, H, W = frames.shape
@@ -166,10 +170,21 @@ class SlotDynamicsModel(nn.Module):
         feat_with_grid = torch.cat([feat, grid], dim=-1)
         return feat_with_grid
 
-    def _sa(self, feat_t, slots, t, attn_module=None):
+    def _sa(self, feat_t, slots, t, attn_module=None, iters_first=None, iters_rest=None):
         mod = attn_module or self.slot_attention
-        n_iters = self.slot_attention.num_iterations
+        n_first = iters_first if iters_first is not None else getattr(self.config, 'iters_first', 3)
+        n_rest = iters_rest if iters_rest is not None else getattr(self.config, 'iters_rest', 1)
+        n_iters = n_first if t == 0 else n_rest
         return mod(feat_t, slots, num_iterations=n_iters)
+
+    def _gru2_step(self, prev_appearance, gru2_hidden):
+        B, N, D = prev_appearance.shape
+        gru2_hidden = self.gru2(
+            prev_appearance.reshape(-1, self.appearance_dim),
+            gru2_hidden.reshape(-1, self.gru2_hidden_dim),
+        )
+        residual = self.gru2_proj(gru2_hidden).reshape(B, N, self.appearance_dim)
+        return prev_appearance + residual, gru2_hidden
 
     def _forward_pretrain(self, frames):
         B, T, C, H, W = frames.shape
@@ -180,8 +195,27 @@ class SlotDynamicsModel(nn.Module):
         burnin_slots = []
         attn_list = []
         slots = None
+        gru2_hidden = None
+        prev_appearance = None
+        use_gru2 = getattr(self.config, 'continue_pretrain', False)
         for t in range(burnin):
+            if t > 0 and use_gru2 and slots is not None:
+                new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                slots = torch.cat([
+                    new_appearance,
+                    slots[:, :, -3:-1].contiguous(),
+                    slots[:, :, -1:].contiguous(),
+                ], dim=-1)
             slots, attn = self._sa(feat[:, t], slots, t)
+            if use_gru2:
+                prev_appearance = slots[:, :, :-3].detach()
+                if t == 0:
+                    BN = prev_appearance.shape[0] * prev_appearance.shape[1]
+                    gru2_hidden = torch.zeros(BN, self.gru2_hidden_dim, device=frames.device)
+                    gru2_hidden = self.gru2(
+                        prev_appearance.reshape(-1, self.appearance_dim),
+                        gru2_hidden,
+                    )
             burnin_slots.append(slots)
             attn_list.append(attn)
         burnin_slots = torch.stack(burnin_slots, dim=1)
