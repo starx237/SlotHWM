@@ -1,5 +1,4 @@
-# SlotPi 可解释性测试配置 — OBJ3D（C 交换实验）
-# 基于 obj3d.yaml，移除了训练专有参数，适用于 interpret_swap_c.py
+# SlotPi ISA C-Swap 可解释性测试配置 — OBJ3D
 dataset: "obj3d"
 data_root: "./data/obj3d"
 num_workers: 0
@@ -13,17 +12,28 @@ encoder_type: "cnn"
 in_channels: 3
 img_size: 64
 encoder_hidden: 64
+feat_dim: 64
 
-# Slot Attention
-num_slots: 7
-static_dim: 120
-dynamic_dim: 8
-pos_enc_dim: 8
-slot_hidden: 128
+# ISA Slot Attention
+num_slots: 6
+appearance_dim: 64
+slot_hidden: 67
+qkv_size: 64
+slot_iters: 3
+sa_mlp_size: 128
+grid_enc_hidden: 128
+scales_factor: 5.0
+add_rel_pos_to_values: true
+softmax_temperature: 1.0
+append_statistics: false
 
-# 解码器
-decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [8, 8]
+# Z 空间拆分
+static_dim: 34
+dynamic_dim: 33
+
+# 解码器（ISA 单流）
+decoder_hidden: 64
+broadcast_size: 16
 
 # 物理模块
 hidden_dim: 256

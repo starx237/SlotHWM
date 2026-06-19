@@ -2,7 +2,7 @@
 # SlotPi 端到端训练入口
 # Usage: python scripts/train.py --config config/obj3d.yaml --workdir experiments/obj3d
 
-import os, sys, argparse, yaml
+import os, sys, argparse, yaml, subprocess
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ['MKL_NUM_THREADS'] = '1'
 os.environ['PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION'] = 'python'
@@ -89,6 +89,26 @@ def main():
     optimizer, scheduler = create_optimizer(
         (p for p in model.parameters() if p.requires_grad), cfg)
     trainer = Trainer(model, optimizer, scheduler, cfg, wandb_logger=wandb_logger)
+
+    # Visualization callback (pretrain only: slot decomposition + swap test)
+    viz_every = getattr(cfg, 'viz_every_steps', 0)
+    if viz_every > 0 and getattr(cfg, 'pretrain', False):
+        vis_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vis_slots.py')
+        swap_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vis_swap.py')
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.abspath(args.config)
+        workdir = os.path.abspath(args.workdir)
+
+        def vis_callback(step):
+            if step > 0 and step % viz_every == 0:
+                subprocess.run([sys.executable, vis_script, '0-4', str(step),
+                                config_path, workdir], cwd=base_dir)
+                for i in range(5):
+                    subprocess.run(
+                        [sys.executable, swap_script, str(i), str(step), 'cswap',
+                         config_path, workdir, 'auto', 'auto'], cwd=base_dir)
+
+        trainer.post_save_callback = vis_callback
 
     num_frames = getattr(cfg, 'num_frames', None) or (getattr(cfg, 'burnin_frames', 6) + getattr(cfg, 'rollout_frames', 10))
     slide_stride = getattr(cfg, 'slide_stride', 1)

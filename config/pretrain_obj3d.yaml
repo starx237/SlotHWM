@@ -1,27 +1,42 @@
-# SlotPi 预训练配置 — OBJ3D（仅 STATM-SAVi，无 rollout）
+# SlotPi ISA 预训练配置 — OBJ3D（仅 ISA 模块，无 rollout）
 dataset: "obj3d"
 data_root: "./data/obj3d"
 num_workers: 4
 
 pretrain: true
 
-# 编码器（OBJ3D 分辨率 64×64）
+subsample: 2
+
+# 编码器
 encoder_type: "cnn"
 in_channels: 3
 img_size: 64
 encoder_hidden: 64
+feat_dim: 64
 
-# Slot Attention
-num_slots: 7
-static_dim: 96
-dynamic_dim: 32
-slot_hidden: 128
+# ISA Slot Attention
+num_slots: 6
+appearance_dim: 64
+slot_hidden: 67
+sa_qkv_size: 64
+slot_iters: 3
+sa_mlp_size: 128
+grid_enc_hidden: 128
+scales_factor: 5.0
+init_with_fixed_scale: null
+add_rel_pos_to_values: true
+softmax_temperature: 1.0
+append_statistics: false
 
-# 解码器
-decoder_hidden: [64, 64, 64, 64]
-broadcast_size: [8, 8]
+# Z 空间拆分（pretrain 不使用，但需要与 finetune 一致）
+static_dim: 60
+dynamic_dim: 7
 
-# 物理模块（预训练不启用，保留默认值）
+# 解码器（ISA 单流 broadcast + pos_emb）
+decoder_hidden: 64
+broadcast_size: 16
+
+# 物理模块（pretrain 不启用，保留默认值）
 hidden_dim: 256
 num_heads: 4
 qkv_size: 128
@@ -36,21 +51,18 @@ delta_t: 0.08
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
-# 时域降采样（原始 25fps → 12.5fps）
-subsample: 2
-
 # 训练
-num_steps: 100000
+num_steps: 200000
 batch_size: 64
-learning_rate: 0.0002
+learning_rate: 0.0004
 weight_decay: 0.0
 max_grad_norm: 0.05
 burnin_frames: 6
 rollout_frames: 0
 slide_stride: 4
-warmup_steps: 2500
+warmup_steps: 10000
 
-# 损失权重（预训练仅重建损失）
+# 损失权重（预训练仅重建 + pos + cos）
 lambda_slots: 0.0
 lambda_images: 0.0
 lambda_energy: 0.0
@@ -58,21 +70,25 @@ lambda_static: 0.0
 lambda_rev: 0.0
 lambda_recon_burnin: 1.0
 lambda_recon_rollout: 0.0
+lambda_pos: 0.1
+lambda_cos: 0.01
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
 
 rev_grad_max_norm: 0.05
 
-# 冻结静态特征
-freeze_C: false
+freeze_C: true
 
-log_every: 10
-eval_every_epochs: 4
+# 仅训练 SA GRU+MLP（加载单帧 checkpoint 后做多帧 burnin 微调）
+train_gru_only: true
+
+log_every: 20
+eval_every_steps: 2000
+viz_every_steps: 2000
 save_every: 1000
 keep_last_checkpoints: 10
 workdir: "./pretrained/obj3d"
 
-# 断点续训
 resume: true
-resume_step: 10000
+resume_step: 40000

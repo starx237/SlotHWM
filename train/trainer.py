@@ -80,7 +80,7 @@ class Trainer:
         self.freeze_slot = getattr(config, 'freeze_slot', False)
         self.jepa = getattr(config, 'jepa', False)
         self.jepa_alpha = getattr(config, 'jepa_alpha', 0.996)
-        self.eval_every_epochs = getattr(config, 'eval_every_epochs', 10)
+        self.eval_every_steps = getattr(config, 'eval_every_steps', 0)
         self.post_save_callback = getattr(config, 'post_save_callback', None)
         if self.pretrain:
             self.rollout = 0
@@ -168,7 +168,21 @@ class Trainer:
                     cx = (a * gx).sum(dim=[-2, -1]) / denom
                     cy = (a * gy).sum(dim=[-2, -1]) / denom
                     centroid = torch.stack([cx, cy], dim=-1)
-                    loss_pos = F.mse_loss(centroid, Sp)
+
+                    # Foreground mask: 基于 dominant pixel 分配
+                    # 每个像素属于 alpha 最高的 slot（hard assignment）
+                    dominant = a.argmax(dim=1)  # (B, H, W)
+                    N_slots = a.shape[1]
+                    owned = torch.stack([
+                        (dominant == j).sum(dim=[-2, -1]) for j in range(N_slots)
+                    ], dim=-1).float()  # (B, N) — 每个 slot "拥有"的像素数
+                    noise_floor = 20  # 至少 20 个像素才被认为是活跃 slot
+                    bg_threshold = 0.6 * H * W
+                    fg_mask = (owned > noise_floor) & (owned < bg_threshold)
+                    if fg_mask.any():
+                        loss_pos = F.mse_loss(centroid[fg_mask], Sp[fg_mask])
+                    else:
+                        loss_pos = torch.tensor(0.0, device=slots_detached.device)
                     extra_loss = extra_loss + self.lambda_pos * loss_pos
                     aux['loss_pos'] = (self.lambda_pos * loss_pos).item()
 
@@ -567,6 +581,12 @@ class Trainer:
                     if self.post_save_callback:
                         self.post_save_callback(global_step)
 
+                if self.eval_every_steps > 0 and global_step % self.eval_every_steps == 0:
+                    val_loss = self.evaluate(val_loader, step=global_step)
+                    self.writer.add_scalar("loss/eval", val_loss*10, global_step)
+                    self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
+                    print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
+
                 best_candidate = aux.get('total', loss_val)
                 if best_candidate < self.best_loss:
                     self.best_loss = best_candidate
@@ -575,11 +595,7 @@ class Trainer:
                         global_step, best_candidate)
 
             epoch += 1
-            if epoch % self.eval_every_epochs == 0:
-                val_loss = self.evaluate(val_loader, step=global_step)
-                self.writer.add_scalar("loss/eval", val_loss*10, global_step)
-                self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
-                print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
         pbar.close()
         self.writer.close()
         self.wandb.finish()
+

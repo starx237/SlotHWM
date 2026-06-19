@@ -11,6 +11,7 @@ statm_bug.md
 architecture.md
 *.md
 !README.md
+*.tar.gz
 
 # Logs
 *.log

@@ -304,12 +304,14 @@ class TimeAttentionBlock(nn.Module):
         pe_query = None
         if T > 0:
             half = D // 2
-            if half > 0:
-                freq = 1.0 / (10000.0 ** (torch.arange(0, half, device=buffer.device).float() / half))
+            n_sin = (D + 1) // 2
+            if n_sin > 0:
+                freq = 1.0 / (10000.0 ** (torch.arange(0, n_sin, device=buffer.device).float() / max(1, half)))
                 t_idx = torch.arange(T, device=buffer.device).float().unsqueeze(1)
                 pe_buffer = torch.zeros(T, D, device=buffer.device)
                 pe_buffer[:, 0::2] = torch.sin(t_idx * freq)
-                pe_buffer[:, 1::2] = torch.cos(t_idx * freq)
+                if half > 0:
+                    pe_buffer[:, 1::2] = torch.cos(t_idx * freq[:half])
                 # Query PE: None=位置T（默认），-1=无PE，>=0=指定位置
                 pe_query = torch.zeros(D, device=buffer.device)
                 if query_pos is not None and query_pos < 0:
@@ -318,7 +320,8 @@ class TimeAttentionBlock(nn.Module):
                     t_q = torch.tensor([query_pos if query_pos is not None else T],
                                        device=buffer.device).float()
                     pe_query[0::2] = torch.sin(t_q * freq)
-                    pe_query[1::2] = torch.cos(t_q * freq)
+                    if half > 0:
+                        pe_query[1::2] = torch.cos(t_q * freq[:half])
             else:
                 pe_buffer = torch.zeros(T, D, device=buffer.device)
                 pe_query = torch.zeros(D, device=buffer.device)
