@@ -108,7 +108,7 @@ def main():
                         [sys.executable, swap_script, str(i), str(step), 'cswap',
                          config_path, workdir, 'auto', 'auto'], cwd=base_dir)
 
-        trainer.post_save_callback = vis_callback
+        trainer.viz_callback = vis_callback
 
     num_frames = getattr(cfg, 'num_frames', None) or (getattr(cfg, 'burnin_frames', 6) + getattr(cfg, 'rollout_frames', 10))
     slide_stride = getattr(cfg, 'slide_stride', 1)

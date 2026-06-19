@@ -84,6 +84,7 @@ class Trainer:
         self.jepa_alpha = getattr(config, 'jepa_alpha', 0.996)
         self.eval_every_steps = getattr(config, 'eval_every_steps', 0)
         self.post_save_callback = getattr(config, 'post_save_callback', None)
+        self.viz_callback = None
         if self.pretrain:
             self.rollout = 0
             print(f"Pretrain mode: burnin={self.burnin}, no rollout")
@@ -132,18 +133,12 @@ class Trainer:
         target_burnin = frames[:, :self.burnin]
         target_rollout = frames[:, self.burnin:self.burnin + self.rollout] if self.rollout > 0 else None
 
-        # 重建损失（原始系数用于 aux，ratio 缩放用于梯度）
-        # continue_pretrain frame-weighted loss disabled: use uniform MSE
-        # if self.continue_pretrain and self.burnin > 1: ...
-        #     mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
-        #     w0 = 0.4
-        #     w_rest = (1.0 - w0) / (self.burnin - 1)
-        #     weights = torch.full((self.burnin,), w_rest, device=video_burnin.device)
-        #     weights[0] = w0
-        #     recon_burnin_val = self.lambda_recon_burnin * (mse_per_frame * weights.unsqueeze(0)).mean()
-        # else:
-        recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
-            video_burnin, target_burnin)
+        if self.continue_pretrain and self.burnin > 1:
+            mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
+            recon_burnin_val = self.lambda_recon_burnin * mse_per_frame[:, 1:].mean()
+        else:
+            recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
+                video_burnin, target_burnin)
         recon_burnin_grad = recon_burnin_val * ratios["burnin"]
 
         if self.pretrain or self.rollout == 0:
@@ -261,9 +256,8 @@ class Trainer:
         return total_grad, aux
 
     def _compute_grad_norms(self):
-        '''计算各子模块梯度范数（需 unscale 后、global clip 前调用）。'''
         info = {}
-        for name in ['encoder', 'decoder', 'slot_attention', 'predictor', 'f_z', 'mlp_rev']:
+        for name in ['encoder', 'decoder', 'slot_attention', 'predictor', 'f_z', 'mlp_rev', 'gru2', 'gru2_proj']:
             mod = getattr(self.model, name, None)
             if mod is None:
                 continue
@@ -570,6 +564,7 @@ class Trainer:
                     # 监控指标日志（梯度 + slot 统计）
                     monitor_keys = ['grad/encoder', 'grad/decoder',
                                     'grad/slot_attention', 'grad/predictor', 'grad/mlp_rev',
+                                    'grad/gru2', 'grad/gru2_proj',
                                     'slot_var_across',
                                     'loss_q', 'loss_p']
                     for k in monitor_keys:
@@ -611,6 +606,8 @@ class Trainer:
                     self.writer.add_scalar("loss/eval", val_loss*10, global_step)
                     self.wandb.log({"loss/eval": val_loss*10}, step=global_step)
                     print(f"Eval step {global_step}: val_loss={val_loss:.6f}")
+                if self.viz_callback and global_step % self.eval_every_steps == 0:
+                    self.viz_callback(global_step)
 
                 best_candidate = aux.get('total', loss_val)
                 if best_candidate < self.best_loss:

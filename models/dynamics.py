@@ -102,6 +102,8 @@ class SlotDynamicsModel(nn.Module):
         self.gru2_hidden_dim = getattr(config, 'gru2_hidden_dim', 64)
         self.gru2 = nn.GRUCell(self.appearance_dim, self.gru2_hidden_dim)
         self.gru2_proj = nn.Linear(self.gru2_hidden_dim, self.appearance_dim)
+        nn.init.zeros_(self.gru2_proj.weight)
+        nn.init.zeros_(self.gru2_proj.bias)
 
         # JEPA 组件
         if self.jepa:
@@ -137,11 +139,12 @@ class SlotDynamicsModel(nn.Module):
             for p in self.target_slot_attention.parameters():
                 p.requires_grad_(False)
 
-        if hasattr(torch, 'compile'):
+        needs_compile = (not getattr(config, 'continue_pretrain', False)
+                         and not getattr(config, 'freeze_slot', False)
+                         and not getattr(config, 'jepa', False))
+        if hasattr(torch, 'compile') and needs_compile:
             self.decoder = torch.compile(self.decoder)
             self.encoder = torch.compile(self.encoder)
-            if self.jepa:
-                self.target_encoder = torch.compile(self.target_encoder)
 
         if getattr(config, 'freeze_slot', False):
             for name in ['encoder', 'slot_attention', 'decoder']:

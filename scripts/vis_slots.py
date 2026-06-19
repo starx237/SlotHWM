@@ -55,20 +55,22 @@ for i, batch in enumerate(loader):
     frames = batch['video'].to(device)
     feat = model._encode_features(frames)
 
-    all_recons = []
+    # Forward through model to get GRU2-processed slots
+    with torch.no_grad():
+        out = model(frames)
+    slots_seq = out['slots']['corrected'][0]  # (T, N, 67)
+    recons = out['outputs']['video_burnin'][0]  # (T, 3, H, W)
+
+    # Decode each frame's slots for per-slot contributions
     all_alphas = []
     all_rgbs = []
-    slots = None
     for t in range(feat.shape[1]):
-        slots, _ = model.slot_attention(feat[:, t], slots, num_iterations=n_iters)
-        recon, alpha, rgb = model.decoder(slots, return_rgb=True)
-        all_recons.append(recon[0])
-        all_alphas.append(alpha[0, :, 0])
-        all_rgbs.append(rgb[0])
+        _, alpha_t, rgb_t = model.decoder(slots_seq[t:t+1], return_rgb=True)
+        all_alphas.append(alpha_t[0, :, 0])  # (N, H, W)
+        all_rgbs.append(rgb_t[0])            # (N, 3, H, W)
 
-    recons = torch.stack(all_recons, dim=0)
-    alphas = torch.stack(all_alphas, dim=0)
-    rgbs = torch.stack(all_rgbs, dim=0)
+    alphas = torch.stack(all_alphas, dim=0)  # (T, N, H, W)
+    rgbs = torch.stack(all_rgbs, dim=0)      # (T, N, 3, H, W)
 
     S = 64
     PAD = 2

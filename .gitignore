@@ -12,6 +12,7 @@ architecture.md
 *.md
 !README.md
 *.tar.gz
+documents/
 
 # Logs
 *.log

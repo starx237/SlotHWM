@@ -66,8 +66,16 @@ for i, batch in enumerate(loader):
     if i != sample_idx:
         continue
     frames = batch['video'].to(device)
+
+    # Use model forward to get GRU2-processed slots for all frames
+    with torch.no_grad():
+        out = model(frames)
+    slots_seq = out['slots']['corrected']       # (1, T, N, 67)
+    recon_seq = out['outputs']['video_burnin']   # (1, T, 3, H, W)
+
+    # Use frame 0 slots for swap
+    slots = slots_seq[:, 0]  # (1, N, 67)
     feat = model._encode_features(frames)
-    slots, attn = model.slot_attention(feat[:, 0], num_iterations=model.slot_attention.num_iterations)
     recon, alpha, rgb = model.decoder(slots, return_rgb=True)
 
     fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
@@ -81,28 +89,47 @@ for i, batch in enumerate(loader):
         swap_a, swap_b = fg_idxs[0], fg_idxs[1]
         print(f'Auto-selected: {swap_a} (score={scores[swap_a]:.4f}), {swap_b} (score={scores[swap_b]:.4f})')
 
-    slots_swapped = slots.clone()
+    # Uniform swap across ALL burnin frames: swap appearance between two slots
+    swapped_seq = slots_seq.clone()  # (1, T, N, 67)
     if mode == 'cswap':
-        app_a = slots_swapped[0, swap_a, :-3].clone()
-        app_b = slots_swapped[0, swap_b, :-3].clone()
-        slots_swapped[0, swap_a, :-3] = app_b
-        slots_swapped[0, swap_b, :-3] = app_a
+        app_a = swapped_seq[:, :, swap_a, :-3].clone()  # (1, T, 64)
+        app_b = swapped_seq[:, :, swap_b, :-3].clone()
+        swapped_seq[:, :, swap_a, :-3] = app_b
+        swapped_seq[:, :, swap_b, :-3] = app_a
     else:
-        tmp = slots_swapped[0, swap_a, -1:].clone()
-        slots_swapped[0, swap_a, -1:] = slots_swapped[0, swap_b, -1:]
-        slots_swapped[0, swap_b, -1:] = tmp
+        tmp = swapped_seq[:, :, swap_a, -1:].clone()  # (1, T, 1)
+        swapped_seq[:, :, swap_a, -1:] = swapped_seq[:, :, swap_b, -1:]
+        swapped_seq[:, :, swap_b, -1:] = tmp
 
-    recon_swapped, alpha_swapped, rgb_swapped = model.decoder(slots_swapped, return_rgb=True)
-    _, attn_swapped = model.slot_attention(feat[:, 0], slots_swapped, num_iterations=model.slot_attention.num_iterations)
+    # Decode swapped slots for all frames
+    swapped_recon_list = []
+    swapped_alpha_list = []
+    swapped_rgb_list = []
+    for t in range(burnin):
+        sr, sa, srg = model.decoder(swapped_seq[:, t], return_rgb=True)
+        swapped_recon_list.append(sr[0])
+        swapped_alpha_list.append(sa[0])
+        swapped_rgb_list.append(srg[0])
+
+    # Decode original slots for all frames
+    orig_alpha_list = []
+    orig_rgb_list = []
+    for t in range(burnin):
+        _, oa, org = model.decoder(slots_seq[:, t], return_rgb=True)
+        orig_alpha_list.append(oa[0])
+        orig_rgb_list.append(org[0])
 
     n_slots = model.slot_attention.num_slots
     n_cols = min(burnin, 6)
     slot_order = [swap_a, swap_b] + [j for j in range(n_slots) if j not in (swap_a, swap_b)]
 
+    # Rows: GT(0) + Recon(1) + ReconSwapped(2) + 2*N_slots slot rows
+    row_offset = 3
+    n_rows = row_offset + 2 * n_slots
+
     S = 64
     PAD = 2
     LABEL_W = 84
-    n_rows = 2 + 2 * n_slots
     canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), n_rows * (S + PAD)), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
     try:
@@ -143,20 +170,25 @@ for i, batch in enumerate(loader):
         y = r * (S + PAD)
         canvas.paste(Image.fromarray(rgb_arr), (x, y))
 
-    r = 0
+    # Row 0: Original GT
     draw.text((2, 2), 'Original', fill=(0, 0, 0), font=font)
     for t in range(n_cols):
-        put_rgb(frames[0, t], r, t)
+        put_rgb(frames[0, t], 0, t)
 
-    r = 1
+    # Row 1: Recon (original model forward)
     draw.text((2, (S + PAD) + 2), 'Recon', fill=(0, 0, 0), font=font)
     for t in range(n_cols):
-        out_t = model.decoder(model.slot_attention(feat[:, t], None, num_iterations=model.slot_attention.num_iterations)[0], return_rgb=True)[0]
-        put_rgb(out_t[0], r, t)
+        put_rgb(recon_seq[0, t], 1, t)
 
+    # Row 2: Recon Swapped (swap propagated through GRU2)
+    draw.text((2, 2 * (S + PAD) + 2), 'Recon Swapped', fill=(0, 0, 0), font=font)
+    for t in range(n_cols):
+        put_rgb(swapped_recon_list[t], 2, t)
+
+    # Row 3+: slot contributions BEFORE/AFTER for all frames
     for idx_in_row, si in enumerate(slot_order):
-        r_before = 2 + 2 * idx_in_row
-        r_after = 2 + 2 * idx_in_row + 1
+        r_before = row_offset + 2 * idx_in_row
+        r_after = row_offset + 2 * idx_in_row + 1
         tag = f'Slot {si}'
         if si == swap_a:
             tag += ' (←B)' if mode == 'cswap' else ' (depth ←B)'
@@ -166,8 +198,9 @@ for i, batch in enumerate(loader):
             tag += ' (bg)'
         draw.text((2, r_before * (S + PAD) + 2), f'{tag} BEFORE', fill=(0, 0, 0), font=font)
         draw.text((2, r_after * (S + PAD) + 2), f'{tag} AFTER', fill=(0, 0, 0), font=font)
-        put_contrib(rgb[0, si], alpha[0, si, 0], r_before, 0)
-        put_contrib(rgb_swapped[0, si], alpha_swapped[0, si, 0], r_after, 0)
+        for t in range(n_cols):
+            put_contrib(orig_rgb_list[t][si], orig_alpha_list[t][si, 0], r_before, t)
+            put_contrib(swapped_rgb_list[t][si], swapped_alpha_list[t][si, 0], r_after, t)
 
     y = n_rows * (S + PAD) + 2
     for si in range(slots.shape[1]):

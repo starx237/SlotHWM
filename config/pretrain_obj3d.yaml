@@ -19,9 +19,9 @@ num_slots: 6
 appearance_dim: 64
 slot_hidden: 67
 sa_qkv_size: 64
-slot_iters: 3
+# slot_iters: 3
 iters_first: 3
-iters_rest: 1
+iters_rest: 2
 disable_gru: false  # reserved
 sa_mlp_size: 128
 grid_enc_hidden: 128
@@ -88,7 +88,7 @@ freeze_C: true
 continue_pretrain: true
 detach_cospos: true
 
-log_every: 20
+log_every: 4
 eval_every_steps: 2000
 viz_every_steps: 2000
 save_every: 1000
