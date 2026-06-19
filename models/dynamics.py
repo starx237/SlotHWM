@@ -32,7 +32,7 @@ class SlotDynamicsModel(nn.Module):
         self.slot_dim = self.appearance_dim + 3
         self.static_dim = getattr(config, 'static_dim', 34)
         self.dynamic_dim = getattr(config, 'dynamic_dim', 33)
-        qkv_size = getattr(config, 'qkv_size', self.slot_dim)
+        qkv_size = getattr(config, 'sa_qkv_size', None) or getattr(config, 'qkv_size', self.slot_dim)
         num_slots = getattr(config, 'num_slots', 7)
 
         enc_type = getattr(config, 'encoder_type', 'cnn')
@@ -166,9 +166,9 @@ class SlotDynamicsModel(nn.Module):
         feat_with_grid = torch.cat([feat, grid], dim=-1)
         return feat_with_grid
 
-    def _sa(self, feat_t, slots, t, attn_module=None, iters_first=3, iters_rest=1):
+    def _sa(self, feat_t, slots, t, attn_module=None):
         mod = attn_module or self.slot_attention
-        n_iters = iters_first if t == 0 else iters_rest
+        n_iters = self.slot_attention.num_iterations
         return mod(feat_t, slots, num_iterations=n_iters)
 
     def _forward_pretrain(self, frames):
@@ -178,13 +178,18 @@ class SlotDynamicsModel(nn.Module):
         feat = self._encode_features(frames)
 
         burnin_slots = []
+        attn_list = []
         slots = None
         for t in range(burnin):
             slots, attn = self._sa(feat[:, t], slots, t)
             burnin_slots.append(slots)
+            attn_list.append(attn)
         burnin_slots = torch.stack(burnin_slots, dim=1)
+        attn_all = torch.stack(attn_list, dim=1)
 
-        dec_burnin = torch.stack([self.decoder(burnin_slots[:, t]) for t in range(burnin)], dim=1)
+        dec_results = [self.decoder(burnin_slots[:, t], return_rgb=True) for t in range(burnin)]
+        dec_burnin = torch.stack([r[0] for r in dec_results], dim=1)
+        dec_alpha = torch.stack([r[1] for r in dec_results], dim=2)
 
         return {
             "outputs": {
@@ -197,7 +202,8 @@ class SlotDynamicsModel(nn.Module):
                 "predicted": None,
                 "target": None,
             },
-            "attn": attn,
+            "attn": attn_all,
+            "alpha": dec_alpha,
             "rev_pred": None,
             "S_c": None,
             "energy_pairs": None,

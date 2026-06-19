@@ -41,7 +41,8 @@ for mk in model.state_dict():
 model.load_state_dict(matched, strict=False)
 model.eval()
 
-ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=6, stride=4, subsample=2)
+burnin = getattr(cfg, 'burnin_frames', 6)
+ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=burnin, stride=4, subsample=2)
 loader = ds.get_dataloader(batch_size=1, shuffle=True, num_workers=0)
 
 def detect_foreground_slots(alpha, rgb):
@@ -95,19 +96,17 @@ for i, batch in enumerate(loader):
     _, attn_swapped = model.slot_attention(feat[:, 0], slots_swapped, num_iterations=model.slot_attention.num_iterations)
 
     n_slots = model.slot_attention.num_slots
-    attn_orig = attn[0].reshape(n_slots, 16, 16)
-    attn_swap = attn_swapped[0].reshape(n_slots, 16, 16)
-    attn_global_max = max(attn_orig.max().item(), attn_swap.max().item())
+    n_cols = min(burnin, 6)
+    slot_order = [swap_a, swap_b] + [j for j in range(n_slots) if j not in (swap_a, swap_b)]
 
     S = 64
     PAD = 2
     LABEL_W = 84
-    n_cols = 4
-    rows = 3 + n_slots + 1
-    canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), rows * (S + PAD)), (255, 255, 255))
+    n_rows = 2 + 2 * n_slots
+    canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), n_rows * (S + PAD)), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
     try:
-        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 14)
+        font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 12)
     except:
         font = ImageFont.load_default()
 
@@ -145,31 +144,32 @@ for i, batch in enumerate(loader):
         canvas.paste(Image.fromarray(rgb_arr), (x, y))
 
     r = 0
-    draw.text((2, 2), 'Image', fill=(0, 0, 0), font=font)
-    put_rgb(frames[0, 0], r, 0)
+    draw.text((2, 2), 'Original', fill=(0, 0, 0), font=font)
+    for t in range(n_cols):
+        put_rgb(frames[0, t], r, t)
 
     r = 1
     draw.text((2, (S + PAD) + 2), 'Recon', fill=(0, 0, 0), font=font)
-    put_rgb(recon[0], r, 0)
+    for t in range(n_cols):
+        out_t = model.decoder(model.slot_attention(feat[:, t], None, num_iterations=model.slot_attention.num_iterations)[0], return_rgb=True)[0]
+        put_rgb(out_t[0], r, t)
 
-    r = 2
-    label = f'{mode} s{swap_a}↔s{swap_b}'
-    draw.text((2, 2 * (S + PAD) + 2), label, fill=(0, 0, 0), font=font)
-    put_rgb(recon_swapped[0], r, 0)
+    for idx_in_row, si in enumerate(slot_order):
+        r_before = 2 + 2 * idx_in_row
+        r_after = 2 + 2 * idx_in_row + 1
+        tag = f'Slot {si}'
+        if si == swap_a:
+            tag += ' (←B)' if mode == 'cswap' else ' (depth ←B)'
+        elif si == swap_b:
+            tag += ' (←A)' if mode == 'cswap' else ' (depth ←A)'
+        if si in bg_idxs:
+            tag += ' (bg)'
+        draw.text((2, r_before * (S + PAD) + 2), f'{tag} BEFORE', fill=(0, 0, 0), font=font)
+        draw.text((2, r_after * (S + PAD) + 2), f'{tag} AFTER', fill=(0, 0, 0), font=font)
+        put_contrib(rgb[0, si], alpha[0, si, 0], r_before, 0)
+        put_contrib(rgb_swapped[0, si], alpha_swapped[0, si, 0], r_after, 0)
 
-    for j in range(n_slots):
-        r = 3 + j
-        label = f'Slot {j}'
-        if j in bg_idxs: label += ' (bg)'
-        if j == swap_a: label += ' ←B'
-        if j == swap_b: label += ' ←A'
-        draw.text((2, r * (S + PAD) + 2), label, fill=(0, 0, 0), font=font)
-        put_contrib(rgb[0, j], alpha[0, j, 0], r, 0)
-        put_contrib(rgb_swapped[0, j], alpha_swapped[0, j, 0], r, 1)
-        put_attn(attn_orig[j], r, 2, attn_global_max)
-        put_attn(attn_swap[j], r, 3, attn_global_max)
-
-    y = rows * (S + PAD) + 2
+    y = n_rows * (S + PAD) + 2
     for si in range(slots.shape[1]):
         pos = slots[0, si, -3:-1]
         dep = slots[0, si, -1:]
@@ -187,4 +187,3 @@ for i, batch in enumerate(loader):
     canvas.save(out_path)
     print(f'Saved: {out_path}')
     break
-

@@ -76,6 +76,7 @@ class Trainer:
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
         self.lambda_pos = getattr(config, 'lambda_pos', 0.0)
         self.lambda_cos = getattr(config, 'lambda_cos', 0.0)
+        self.train_gru_only = getattr(config, 'train_gru_only', False)
         self.pretrain = getattr(config, 'pretrain', False)
         self.freeze_slot = getattr(config, 'freeze_slot', False)
         self.jepa = getattr(config, 'jepa', False)
@@ -131,8 +132,16 @@ class Trainer:
         target_rollout = frames[:, self.burnin:self.burnin + self.rollout] if self.rollout > 0 else None
 
         # 重建损失（原始系数用于 aux，ratio 缩放用于梯度）
-        recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
-            video_burnin, target_burnin)
+        if self.train_gru_only and self.burnin > 1:
+            mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
+            w0 = 0.4
+            w_rest = (1.0 - w0) / (self.burnin - 1)
+            weights = torch.full((self.burnin,), w_rest, device=video_burnin.device)
+            weights[0] = w0
+            recon_burnin_val = self.lambda_recon_burnin * (mse_per_frame * weights.unsqueeze(0)).mean()
+        else:
+            recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
+                video_burnin, target_burnin)
         recon_burnin_grad = recon_burnin_val * ratios["burnin"]
 
         if self.pretrain or self.rollout == 0:
@@ -141,48 +150,60 @@ class Trainer:
             aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0, "loss_q": 0.0, "loss_p": 0.0}
 
             if self.lambda_pos > 0 or self.lambda_cos > 0:
-                slots = out["slots"]["corrected"][:, 0]
-                B, N, D = slots.shape
+                B, N, D = out["slots"]["corrected"].shape[:3]
+                burnin_T = out["slots"]["corrected"].shape[1]
+                loss_pos_list = []
+                loss_cos_list = []
 
-                if self.lambda_cos > 0:
-                    attn = out["attn"]
-                    attn_dot = torch.bmm(attn, attn.transpose(1, 2))
-                    diag = torch.eye(N, device=slots.device)
-                    off_diag = (attn_dot * (1 - diag.unsqueeze(0))).sum(dim=[-2, -1])
-                    loss_cos = off_diag.mean() / (N * (N - 1))
+                for t in range(burnin_T):
+                    slots_t = out["slots"]["corrected"][:, t]
+
+                    if self.lambda_cos > 0:
+                        attn_t = out["attn"][:, t]
+                        if self.train_gru_only:
+                            attn_t = attn_t.detach()
+                        attn_dot = torch.bmm(attn_t, attn_t.transpose(1, 2))
+                        diag = torch.eye(N, device=slots_t.device)
+                        off_diag = (attn_dot * (1 - diag.unsqueeze(0))).sum(dim=[-2, -1])
+                        loss_cos_t = off_diag.mean() / (N * (N - 1))
+                        loss_cos_list.append(loss_cos_t)
+
+                    if self.lambda_pos > 0:
+                        alpha_t = out["alpha"][:, :, t]
+                        if self.train_gru_only:
+                            alpha_t = alpha_t.detach()
+                        Sp = slots_t[:, :, -3:-1]
+                        H, W = alpha_t.shape[-2:]
+                        gy, gx = torch.meshgrid(
+                            torch.linspace(-1, 1, H, device=slots_t.device),
+                            torch.linspace(-1, 1, W, device=slots_t.device),
+                            indexing='ij',
+                        )
+                        a = alpha_t.squeeze(2)
+                        denom = a.sum(dim=[-2, -1]) + 1e-8
+                        cx = (a * gx).sum(dim=[-2, -1]) / denom
+                        cy = (a * gy).sum(dim=[-2, -1]) / denom
+                        centroid = torch.stack([cx, cy], dim=-1)
+
+                        dominant = a.argmax(dim=1)
+                        owned = torch.stack([
+                            (dominant == j).sum(dim=[-2, -1]) for j in range(N)
+                        ], dim=-1).float()
+                        noise_floor = 20
+                        bg_threshold = 0.6 * H * W
+                        fg_mask = (owned > noise_floor) & (owned < bg_threshold)
+                        if fg_mask.any():
+                            loss_pos_t = F.mse_loss(centroid[fg_mask], Sp[fg_mask])
+                        else:
+                            loss_pos_t = torch.tensor(0.0, device=slots_t.device)
+                        loss_pos_list.append(loss_pos_t)
+
+                if loss_cos_list:
+                    loss_cos = torch.stack(loss_cos_list).mean()
                     extra_loss = extra_loss + self.lambda_cos * loss_cos
                     aux['loss_cos'] = (self.lambda_cos * loss_cos).item()
-
-                if self.lambda_pos > 0:
-                    slots_detached = out["slots"]["corrected"][:, 0].detach()
-                    _, alpha, _ = self.model.decoder(slots_detached, return_rgb=True)
-                    Sp = slots_detached[:, :, -3:-1]
-                    H, W = alpha.shape[-2:]
-                    gy, gx = torch.meshgrid(
-                        torch.linspace(-1, 1, H, device=slots_detached.device),
-                        torch.linspace(-1, 1, W, device=slots_detached.device),
-                        indexing='ij',
-                    )
-                    a = alpha.squeeze(2)
-                    denom = a.sum(dim=[-2, -1]) + 1e-8
-                    cx = (a * gx).sum(dim=[-2, -1]) / denom
-                    cy = (a * gy).sum(dim=[-2, -1]) / denom
-                    centroid = torch.stack([cx, cy], dim=-1)
-
-                    # Foreground mask: 基于 dominant pixel 分配
-                    # 每个像素属于 alpha 最高的 slot（hard assignment）
-                    dominant = a.argmax(dim=1)  # (B, H, W)
-                    N_slots = a.shape[1]
-                    owned = torch.stack([
-                        (dominant == j).sum(dim=[-2, -1]) for j in range(N_slots)
-                    ], dim=-1).float()  # (B, N) — 每个 slot "拥有"的像素数
-                    noise_floor = 20  # 至少 20 个像素才被认为是活跃 slot
-                    bg_threshold = 0.6 * H * W
-                    fg_mask = (owned > noise_floor) & (owned < bg_threshold)
-                    if fg_mask.any():
-                        loss_pos = F.mse_loss(centroid[fg_mask], Sp[fg_mask])
-                    else:
-                        loss_pos = torch.tensor(0.0, device=slots_detached.device)
+                if loss_pos_list:
+                    loss_pos = torch.stack(loss_pos_list).mean()
                     extra_loss = extra_loss + self.lambda_pos * loss_pos
                     aux['loss_pos'] = (self.lambda_pos * loss_pos).item()
 
@@ -521,6 +542,8 @@ class Trainer:
                         "static": f"{aux['static_loss']:.6f}",
                         "rev": f"{aux['rev_loss']:.6f}",
                         "energy": f"{aux['energy_loss']:.6f}",
+                        "pos": f"{aux.get('loss_pos', 0):.6f}",
+                        "cos": f"{aux.get('loss_cos', 0):.6f}",
                         "lr": f"{lr:.2e}",
                         "gamma": f"{gamma:.3f}",
                     })
