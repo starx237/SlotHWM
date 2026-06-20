@@ -32,7 +32,7 @@ add_rel_pos_to_values: true
 softmax_temperature: 1.0
 append_statistics: false
 
-# Z 空间拆分（pretrain 不使用，但需要与 finetune 一致）
+# Z 空间拆分
 static_dim: 60
 dynamic_dim: 7
 
@@ -62,7 +62,7 @@ batch_size: 64
 learning_rate: 0.0004
 weight_decay: 0.0
 max_grad_norm: 0.05
-burnin_frames: 6
+burnin_frames: 16
 rollout_frames: 0
 slide_stride: 4
 warmup_steps: 10000
@@ -90,12 +90,12 @@ continue_pretrain: true
 detach_cospos: true
 
 # 日志与存档
-log_every: 10
+log_every: 2
 eval_every_steps: 2000
 viz_every_steps: 2000
 save_every: 1000
-keep_last_checkpoints: 10
+keep_last_checkpoints: 20
 workdir: "./pretrained/obj3d"
 
 resume: true
-resume_step: 40000
+resume_step: 41000

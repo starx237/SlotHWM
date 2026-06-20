@@ -4,7 +4,7 @@ from models.encoder import CNNEncoder, ResNetEncoder
 from models.decoder import ISASpatialBroadcastDecoder
 from models.attention import SlotAttentionTranslScaleEquiv
 from models.predictor import SlotPredictor
-from models.misc import GradientReversal, AffineCoupling, create_coordinate_grid
+from models.misc import GradientReversal, AffineCoupling, Identity, create_coordinate_grid
 
 
 class SlotDynamicsModel(nn.Module):
@@ -86,11 +86,15 @@ class SlotDynamicsModel(nn.Module):
         )
 
         # f_z 只作用在 appearance 部分
-        self.f_z = AffineCoupling(
-            static_dim=self.static_dim,
-            dynamic_dim=self.appearance_dim - self.static_dim,
-            hidden_dim=getattr(config, 'hidden_dim', 256),
-        )
+        z_dyn_dim = self.appearance_dim - self.static_dim
+        if z_dyn_dim > 0:
+            self.f_z = AffineCoupling(
+                static_dim=self.static_dim,
+                dynamic_dim=z_dyn_dim,
+                hidden_dim=getattr(config, 'hidden_dim', 256),
+            )
+        else:
+            self.f_z = Identity()
 
         self.predictor = SlotPredictor(config)
 
@@ -294,6 +298,7 @@ class SlotDynamicsModel(nn.Module):
 
         freeze_C = getattr(self.config, 'freeze_C', False)
         global_C = self.predictor.compute_C(burnin_Z) if freeze_C else None
+        depth_anchor = Z_full[:, :, -1:].detach()
         pred_Z_list = []
         energy_pairs = []
         cur_Z = Z_full
@@ -304,7 +309,8 @@ class SlotDynamicsModel(nn.Module):
             C_use = global_C if freeze_C else cur_Z[:, :, :self.static_dim]
             Z_buf_t = torch.stack(Z_buffer[:burnin + t], dim=1)
             out = self.predictor(cur_Z, Z_buf_t, C=C_use,
-                                 return_energy=True, return_qp=True)
+                                 return_energy=True, return_qp=True,
+                                 depth_anchor=depth_anchor)
             next_Z, ep, (fresh_q, fresh_p), (q_next, p_next) = out
             pred_Z_list.append(next_Z)
             if ep is not None:
@@ -335,7 +341,11 @@ class SlotDynamicsModel(nn.Module):
             s = slots
             for t in range(burnin, burnin + rollout):
                 feat_t = feat[:, t]
+                if gru2_hidden is not None:
+                    new_app, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                    s = torch.cat([new_app, s[:, :, -3:-1].contiguous(), s[:, :, -1:].contiguous()], dim=-1)
                 s, attn_t = self._sa(feat_t, s, t)
+                prev_appearance = s[:, :, :-3].detach()
                 target_S_list.append(s)
             target_S = torch.stack(target_S_list, dim=1)
 
@@ -400,12 +410,14 @@ class SlotDynamicsModel(nn.Module):
         freeze_C = getattr(self.config, 'freeze_C', False)
         global_C = self.predictor.compute_C(
             slot_buffer[:, :burnin, :, :self.static_dim]) if freeze_C else None
+        depth_anchor = slot_buffer[:, burnin - 1, :, -1:].detach()
         pred_S_list = []
         energy_pairs = []
         cur_S = slot_buffer[:, burnin - 1]
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_S[:, :, :self.static_dim]
-            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_use, return_energy=True)
+            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_use, return_energy=True,
+                                 depth_anchor=depth_anchor)
             next_S, ep = out if isinstance(out, tuple) else (out, None)
             pred_S_list.append(next_S)
             if ep is not None:

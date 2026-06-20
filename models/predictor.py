@@ -36,6 +36,7 @@ class SlotPredictor(nn.Module):
         self.buffer_len = getattr(config, 'buffer_len', 10)
 
         self.freeze_C = getattr(config, 'freeze_C', False)
+        self.depth_max = getattr(config, 'depth_max', 1.0)
         if self.freeze_C:
             self.C_time_attn = TimeAttentionBlock(
                 embed_dim=self.static_dim,
@@ -92,6 +93,10 @@ class SlotPredictor(nn.Module):
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].weight)
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].bias)
 
+        self.depth_gate = nn.Linear(self.dyn_total_dim, 1)
+        nn.init.zeros_(self.depth_gate.weight)
+        nn.init.zeros_(self.depth_gate.bias)
+
     def compute_C(self, burnin_slots):
         if not self.freeze_C:
             return burnin_slots[:, -1, :, :self.static_dim]
@@ -104,7 +109,7 @@ class SlotPredictor(nn.Module):
         return self.C_time_attn(query, sta, query_pos=-1)
 
     def forward(self, z, z_buffer, C: Optional[torch.Tensor] = None, return_energy=False,
-                return_qp=False):
+                return_qp=False, depth_anchor: Optional[torch.Tensor] = None):
         B, N, D = z.shape
         D_sta = self.static_dim
         D_dyn = self.dyn_total_dim
@@ -130,6 +135,16 @@ class SlotPredictor(nn.Module):
             energy_pair, fresh_q, fresh_p = None, None, None
 
         next_dyn = self.fusion_mlp(q_next)
+
+        if depth_anchor is not None:
+            upper = torch.max(depth_anchor * 2,
+                              torch.tensor(self.depth_max, device=depth_anchor.device))
+            depth = depth_anchor + torch.tanh(self.depth_gate(q_next)) * (upper - depth_anchor)
+            depth = torch.clamp(depth, min=0)
+            next_dyn = torch.cat([
+                next_dyn[:, :, :-1],
+                depth
+            ], dim=-1)
 
         if self.freeze_C:
             z_phys = torch.cat([C, next_dyn], dim=-1)

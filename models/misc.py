@@ -17,9 +17,12 @@ def create_coordinate_grid(h, w, device):
 
 
 class Identity(nn.Module):
-    '''恒等映射层，不对输入做任何变换，直接返回输入值'''
+    '''恒等映射层，不对输入做任何变换，直接返回输入'''
     def forward(self, x):
         return x
+
+    def inverse(self, y):
+        return y
 
 
 class Readout(nn.Module):

@@ -33,8 +33,8 @@ softmax_temperature: 1.0
 append_statistics: false
 
 # Z 空间拆分（static_dim + dynamic_dim = 67）
-static_dim: 60
-dynamic_dim: 7
+static_dim: 64
+dynamic_dim: 3
 
 # 解码器（ISA 单流 broadcast + pos_emb）
 decoder_hidden: 64
@@ -83,6 +83,7 @@ rev_grad_max_norm: 0.1
 
 freeze_C: true
 zero_init_dyn: true
+depth_max: 0.4
 
 # 日志与存档
 log_every: 2
@@ -93,8 +94,8 @@ keep_last_checkpoints: 20
 workdir: "./experiments/obj3d"
 
 # 断点续训
-resume: true
-resume_step: 1000
+resume: false
+resume_step: 0
 
 # 冻结 ISA 模块（finetune 阶段启用）
 freeze_slot: true

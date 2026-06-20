@@ -135,7 +135,8 @@ class Trainer:
 
         if self.continue_pretrain and self.burnin > 1:
             mse_per_frame = ((video_burnin - target_burnin) ** 2).mean(dim=[2, 3, 4])
-            recon_burnin_val = self.lambda_recon_burnin * mse_per_frame[:, 1:].mean()
+            n_eval = min(10, self.burnin)
+            recon_burnin_val = self.lambda_recon_burnin * mse_per_frame[:, -n_eval:].mean()
         else:
             recon_burnin_val = self.lambda_recon_burnin * nn.functional.mse_loss(
                 video_burnin, target_burnin)
@@ -147,7 +148,8 @@ class Trainer:
             aux = {"slot_loss": 0.0, "static_loss": 0.0, "rev_loss": 0.0, "energy_loss": 0.0, "loss_q": 0.0, "loss_p": 0.0}
 
             if self.lambda_pos > 0 or self.lambda_cos > 0:
-                B, N, D = out["slots"]["corrected"].shape[:3]
+                B = out["slots"]["corrected"].shape[0]
+                N = out["slots"]["corrected"].shape[2]
                 burnin_T = out["slots"]["corrected"].shape[1]
                 loss_pos_list = []
                 loss_cos_list = []
@@ -401,69 +403,64 @@ class Trainer:
 
     def _compute_swap_rollout(self, out, burnin, rollout, target_size):
         '''Compute swap test for rollout: swap appearance of two foreground slots
-        at the first rollout Z frame, then propagate through predictor.
+        in burnin Z, recompute C, then full rollout from swapped burnin.
         Returns list of (3, H, W) tensors (decoded swap rollout frames).'''
         with torch.no_grad():
             pred_Z = out.get("slots", {}).get("predicted")
             if pred_Z is None or pred_Z.shape[1] == 0:
                 return [torch.zeros(3, target_size, target_size, device=self.device)] * rollout
 
-            # Extract first sample for visualization (batch=1)
-            pred_Z = pred_Z[:1]
-            pred_Z_0 = pred_Z[:, 0]  # (1, N, slot_dim) — first rollout Z frame
-
             # Detect foreground slots from alpha of decoded burnin last frame
             burnin_S = out["slots"]["corrected"][:1]
-            last_burnin_S = burnin_S[:, -1]  # (1, N, 67)
+            last_burnin_S = burnin_S[:, -1]
             _, alpha, _ = self.model.decoder(last_burnin_S, return_rgb=True)
 
-            # Pick top-2 foreground by dominant pixel count
             N = alpha.shape[1]
-            dominant = alpha.argmax(dim=1).squeeze(1)  # (N, H, W)
+            dominant = alpha.argmax(dim=1).squeeze(1)
             slot_pixels = [(dominant[0] == j).sum().item() for j in range(N)]
             fg_sorted = sorted(range(N), key=lambda j: -slot_pixels[j])
 
             swap_a, swap_b = fg_sorted[0], fg_sorted[1]
 
-            # Swap appearance in Z at first rollout frame
-            swapped_Z_0 = pred_Z_0.clone()
             app_dim = self.model.appearance_dim
-            z_app_a = swapped_Z_0[:, swap_a, :app_dim].clone()
-            z_app_b = swapped_Z_0[:, swap_b, :app_dim].clone()
-            swapped_Z_0[:, swap_a, :app_dim] = z_app_b
-            swapped_Z_0[:, swap_b, :app_dim] = z_app_a
 
-            # Rebuild Z_buffer from burnin slots
-            B = 1
-            buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
-            slot_dim_z = self.model.static_dim + self.model.dynamic_dim
-            Z_buffer_swap = torch.zeros(B, buf_sz, self.config.num_slots, slot_dim_z, device=self.device)
-
-            # Fill burnin Z from the model's burnin slots
+            # Build burnin Z list and swap appearance in every frame
+            swapped_burnin_Z_list = []
             for t in range(burnin):
                 S_t = burnin_S[:, t]
                 Z_core = self.model.f_z(S_t[:, :, :app_dim])
                 Z_full = torch.cat([Z_core, S_t[:, :, -3:]], dim=-1)
-                Z_buffer_swap[:, t] = Z_full
-
-            Z_buffer_swap[:, burnin] = swapped_Z_0
+                sz = Z_full.clone()
+                z_app_a = sz[:, swap_a, :app_dim].clone()
+                z_app_b = sz[:, swap_b, :app_dim].clone()
+                sz[:, swap_a, :app_dim] = z_app_b
+                sz[:, swap_b, :app_dim] = z_app_a
+                swapped_burnin_Z_list.append(sz)
 
             freeze_C = getattr(self.config, 'freeze_C', False)
             if freeze_C:
-                burnin_Z_all = Z_buffer_swap[:, :burnin]
-                global_C = self.model.predictor.compute_C(burnin_Z_all)
+                swapped_global_C = self.model.predictor.compute_C(
+                    torch.stack(swapped_burnin_Z_list, dim=1))
             else:
-                global_C = None
+                swapped_global_C = None
 
-            # Propagate swap rollout
-            cur_Z = swapped_Z_0
-            swap_pred_Z = [swapped_Z_0]
+            depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
+
+            # Rollout from swapped burnin last frame
+            B = 1
+            buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
+            slot_dim_z = self.model.static_dim + self.model.dynamic_dim
+            Z_buffer_swap = list(swapped_burnin_Z_list)
+            cur_Z = swapped_burnin_Z_list[-1]
+            swap_pred_Z = [cur_Z]
             for t in range(1, rollout):
-                C_use = global_C if freeze_C else cur_Z[:, :, :self.model.static_dim]
-                next_Z = self.model.predictor(cur_Z, Z_buffer_swap[:, :burnin + t], C=C_use)
+                C_use = swapped_global_C if freeze_C else cur_Z[:, :, :self.model.static_dim]
+                Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
+                next_Z = self.model.predictor(cur_Z, Z_buf_t, C=C_use,
+                                              depth_anchor=depth_anchor)
                 swap_pred_Z.append(next_Z)
                 if burnin + t < buf_sz:
-                    Z_buffer_swap[:, burnin + t] = next_Z
+                    Z_buffer_swap.append(next_Z)
                 cur_Z = next_Z
 
             # Decode swapped rollout
@@ -493,7 +490,10 @@ class Trainer:
                        key=_step_num)
         keep_threshold = current_step - self.keep_last * self.save_every
         for fp in ckpts:
-            step = int(os.path.basename(fp).replace('step_', '').replace('.pt', ''))
+            n = os.path.basename(fp).replace('step_', '').replace('.pt', '')
+            if not n.isdigit():
+                continue
+            step = int(n)
             if step <= keep_threshold:
                 os.remove(fp)
 
