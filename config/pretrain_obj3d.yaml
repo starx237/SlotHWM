@@ -1,4 +1,5 @@
 # SlotPi ISA 预训练配置 — OBJ3D（仅 ISA 模块，无 rollout）
+# Encoder+SlotAttention+Decoder 已迁移至 ISA 方案
 dataset: "obj3d"
 data_root: "./data/obj3d"
 num_workers: 4
@@ -80,7 +81,7 @@ gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
 
-rev_grad_max_norm: 0.05
+rev_grad_max_norm: 0.1
 
 freeze_C: true
 
@@ -88,7 +89,8 @@ freeze_C: true
 continue_pretrain: true
 detach_cospos: true
 
-log_every: 4
+# 日志与存档
+log_every: 10
 eval_every_steps: 2000
 viz_every_steps: 2000
 save_every: 1000

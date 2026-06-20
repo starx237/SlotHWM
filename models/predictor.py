@@ -137,15 +137,15 @@ class SlotPredictor(nn.Module):
 
         # 时空推理模块：freeze_C 时只处理 Z^d 部分
         if self.freeze_C:
-            st_in = next_dyn
-            for block in self.spatiotemporal_module:
-                st_dyn = block(st_in, z_buffer_dyn)
+            # st_in = next_dyn
+            # for block in self.spatiotemporal_module:
+            #     st_dyn = block(st_in, z_buffer_dyn)
             st_out = torch.zeros_like(z_phys)
-            st_out[:, :, D_sta:] = st_dyn
+            # st_out[:, :, D_sta:] = st_dyn
         else:
             st_out = torch.zeros_like(z_phys)
-            # for block in self.spatiotemporal_module:
-            #     st_out = block(st_out, z_buffer)
+            for block in self.spatiotemporal_module:
+                st_out = block(st_out, z_buffer)
 
         if self.freeze_C:
             pred_z_next = z_phys.clone()

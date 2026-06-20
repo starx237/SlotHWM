@@ -330,7 +330,7 @@ class Trainer:
         return total_loss / max(1, len(dataloader))
 
     def _save_viz_batch(self, samples, step):
-        '''保存 num_viz 张对比图，每张 4 行 × N 列。'''
+        '''保存 num_viz 张对比图，每张 N 行 × N 列。finetune 模式含 swap test 行。'''
         viz_dir = os.path.join(self.config.workdir, 'eval_images')
         for old in glob.glob(os.path.join(viz_dir, 'step_*')):
             import shutil
@@ -338,6 +338,8 @@ class Trainer:
 
         step_dir = os.path.join(viz_dir, f'step_{step}')
         os.makedirs(step_dir, exist_ok=True)
+
+        is_finetune = (not self.pretrain and self.rollout > 0)
 
         for idx, (out, frames) in enumerate(samples):
             B, T, C, H, W = frames.shape
@@ -353,8 +355,21 @@ class Trainer:
             dec_b = upscale(out["outputs"]["video_burnin"][:1])
             gt_b = frames[:, :burnin]
 
-            n_cols = max(burnin, rollout) if rollout > 0 else burnin
-            n_rows = 4 if rollout > 0 and out["outputs"]["video_pred"] is not None else 2
+            if is_finetune and out["outputs"]["video_pred"] is not None:
+                dec_p = upscale(out["outputs"]["video_pred"][:1])
+                gt_r = frames[:, burnin:burnin + rollout]
+
+                # Swap test in Z-space: swap at first rollout frame, propagate, decode
+                swap_recon = self._compute_swap_rollout(out, burnin, rollout, target_size)
+
+                n_cols = max(burnin, rollout)
+                n_rows = 3  # GT Rollout, Pred Rollout, Pred Swapped
+                labels = ['GT Rollout', 'Pred Rollout', 'Pred Swapped']
+            else:
+                n_cols = burnin
+                n_rows = 2
+                labels = ['GT Burnin', 'Recon Burnin']
+
             S = min(80, 2000 // max(n_cols, 1))
             canvas = Image.new('RGB', (n_cols * S, n_rows * S), (255, 255, 255))
             draw = ImageDraw.Draw(canvas)
@@ -365,19 +380,15 @@ class Trainer:
                 im = im.resize((S, S), Image.BILINEAR)
                 canvas.paste(im, (col * S, row * S))
 
-            for t in range(burnin):
-                put(gt_b[0, t], 0, t)
-                put(dec_b[0, t], 1, t)
-
-            if rollout > 0 and out["outputs"]["video_pred"] is not None:
-                dec_p = upscale(out["outputs"]["video_pred"][:1])
-                gt_r = frames[:, burnin:burnin + rollout]
+            if is_finetune and out["outputs"]["video_pred"] is not None:
                 for t in range(rollout):
-                    put(gt_r[0, t], 2, t)
-                    put(dec_p[0, t], 3, t)
-                labels = ['GT Burnin', 'Recon Burnin', 'GT Rollout', 'Pred Rollout']
+                    put(gt_r[0, t], 0, t)
+                    put(dec_p[0, t], 1, t)
+                    put(swap_recon[t], 2, t)
             else:
-                labels = ['GT Burnin', 'Recon Burnin']
+                for t in range(burnin):
+                    put(gt_b[0, t], 0, t)
+                    put(dec_b[0, t], 1, t)
 
             for i, label in enumerate(labels):
                 draw.text((2, i * S + 2), label, fill=(0, 0, 0))
@@ -387,6 +398,89 @@ class Trainer:
 
             if self.wandb.enabled:
                 self.wandb.log({f"eval/recon_{idx}": self.wandb.wandb.Image(path)}, step=step)
+
+    def _compute_swap_rollout(self, out, burnin, rollout, target_size):
+        '''Compute swap test for rollout: swap appearance of two foreground slots
+        at the first rollout Z frame, then propagate through predictor.
+        Returns list of (3, H, W) tensors (decoded swap rollout frames).'''
+        with torch.no_grad():
+            pred_Z = out.get("slots", {}).get("predicted")
+            if pred_Z is None or pred_Z.shape[1] == 0:
+                return [torch.zeros(3, target_size, target_size, device=self.device)] * rollout
+
+            # Extract first sample for visualization (batch=1)
+            pred_Z = pred_Z[:1]
+            pred_Z_0 = pred_Z[:, 0]  # (1, N, slot_dim) — first rollout Z frame
+
+            # Detect foreground slots from alpha of decoded burnin last frame
+            burnin_S = out["slots"]["corrected"][:1]
+            last_burnin_S = burnin_S[:, -1]  # (1, N, 67)
+            _, alpha, _ = self.model.decoder(last_burnin_S, return_rgb=True)
+
+            # Pick top-2 foreground by dominant pixel count
+            N = alpha.shape[1]
+            dominant = alpha.argmax(dim=1).squeeze(1)  # (N, H, W)
+            slot_pixels = [(dominant[0] == j).sum().item() for j in range(N)]
+            fg_sorted = sorted(range(N), key=lambda j: -slot_pixels[j])
+
+            swap_a, swap_b = fg_sorted[0], fg_sorted[1]
+
+            # Swap appearance in Z at first rollout frame
+            swapped_Z_0 = pred_Z_0.clone()
+            app_dim = self.model.appearance_dim
+            z_app_a = swapped_Z_0[:, swap_a, :app_dim].clone()
+            z_app_b = swapped_Z_0[:, swap_b, :app_dim].clone()
+            swapped_Z_0[:, swap_a, :app_dim] = z_app_b
+            swapped_Z_0[:, swap_b, :app_dim] = z_app_a
+
+            # Rebuild Z_buffer from burnin slots
+            B = 1
+            buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
+            slot_dim_z = self.model.static_dim + self.model.dynamic_dim
+            Z_buffer_swap = torch.zeros(B, buf_sz, self.config.num_slots, slot_dim_z, device=self.device)
+
+            # Fill burnin Z from the model's burnin slots
+            for t in range(burnin):
+                S_t = burnin_S[:, t]
+                Z_core = self.model.f_z(S_t[:, :, :app_dim])
+                Z_full = torch.cat([Z_core, S_t[:, :, -3:]], dim=-1)
+                Z_buffer_swap[:, t] = Z_full
+
+            Z_buffer_swap[:, burnin] = swapped_Z_0
+
+            freeze_C = getattr(self.config, 'freeze_C', False)
+            if freeze_C:
+                burnin_Z_all = Z_buffer_swap[:, :burnin]
+                global_C = self.model.predictor.compute_C(burnin_Z_all)
+            else:
+                global_C = None
+
+            # Propagate swap rollout
+            cur_Z = swapped_Z_0
+            swap_pred_Z = [swapped_Z_0]
+            for t in range(1, rollout):
+                C_use = global_C if freeze_C else cur_Z[:, :, :self.model.static_dim]
+                next_Z = self.model.predictor(cur_Z, Z_buffer_swap[:, :burnin + t], C=C_use)
+                swap_pred_Z.append(next_Z)
+                if burnin + t < buf_sz:
+                    Z_buffer_swap[:, burnin + t] = next_Z
+                cur_Z = next_Z
+
+            # Decode swapped rollout
+            swap_recon = []
+            for t in range(rollout):
+                Z_t = swap_pred_Z[t]
+                Z_app = Z_t[:, :, :app_dim]
+                pos_depth = Z_t[:, :, app_dim:]
+                S_raw = self.model.f_z.inverse(Z_app)
+                S_t = torch.cat([S_raw, pos_depth], dim=-1)
+                dec = self.model.decoder(S_t)
+                if dec.shape[-1] != target_size:
+                    dec = F.interpolate(dec.reshape(-1, 3, dec.shape[-1], dec.shape[-1]),
+                                        size=target_size, mode='bilinear').reshape(1, 3, target_size, target_size)
+                swap_recon.append(dec[0])
+
+            return swap_recon
 
     def _cleanup_old_checkpoints(self, current_step):
         '''只保留当前步数往前最近的 keep_last 个存档，删除落后/未来的存档。'''

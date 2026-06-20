@@ -27,6 +27,8 @@ cfg = SimpleNamespace(**cfg_dict)
 if workdir:
     cfg.workdir = workdir
 
+is_pretrain = getattr(cfg, 'pretrain', True)
+
 model = SlotDynamicsModel(cfg).to(device)
 ckpt_dir = os.path.join(cfg.workdir, 'checkpoints')
 ckpt_path = os.path.join(ckpt_dir, f'step_{step}.pt')
@@ -43,7 +45,10 @@ for mk in model.state_dict():
 model.load_state_dict(matched, strict=False)
 model.eval()
 
-ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=6, stride=4, subsample=2)
+burnin = getattr(cfg, 'burnin_frames', 6)
+rollout = getattr(cfg, 'rollout_frames', 0) if not is_pretrain else 0
+total_frames = burnin + rollout
+ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=total_frames, stride=getattr(cfg, 'slide_stride', 4), subsample=getattr(cfg, 'subsample', 2))
 loader = ds.get_dataloader(batch_size=1, shuffle=True, num_workers=0)
 
 n_iters = model.slot_attention.num_iterations
@@ -53,19 +58,29 @@ for i, batch in enumerate(loader):
     if i not in sample_ids:
         continue
     frames = batch['video'].to(device)
-    feat = model._encode_features(frames)
 
-    # Forward through model to get GRU2-processed slots
     with torch.no_grad():
         out = model(frames)
-    slots_seq = out['slots']['corrected'][0]  # (T, N, 67)
-    recons = out['outputs']['video_burnin'][0]  # (T, 3, H, W)
 
-    # Decode each frame's slots for per-slot contributions
+    if is_pretrain:
+        recons = out['outputs']['video_burnin'][0]  # (T, 3, H, W)
+        slots_seq = out['slots']['corrected'][0]     # (T, N, 67)
+        n_display = burnin
+        display_frames = frames[0, :burnin]
+        display_recons = recons
+        display_slots = slots_seq
+    else:
+        pred_recons = out['outputs']['video_pred'][0]   # (R, 3, H, W)
+        pred_slots_S = out['slots']['predicted'][0]      # (R, N, 67)
+        n_display = rollout
+        display_frames = frames[0, burnin:burnin + rollout]
+        display_recons = pred_recons
+        display_slots = pred_slots_S
+
     all_alphas = []
     all_rgbs = []
-    for t in range(feat.shape[1]):
-        _, alpha_t, rgb_t = model.decoder(slots_seq[t:t+1], return_rgb=True)
+    for t in range(n_display):
+        _, alpha_t, rgb_t = model.decoder(display_slots[t:t+1], return_rgb=True)
         all_alphas.append(alpha_t[0, :, 0])  # (N, H, W)
         all_rgbs.append(rgb_t[0])            # (N, 3, H, W)
 
@@ -75,10 +90,10 @@ for i, batch in enumerate(loader):
     S = 64
     PAD = 2
     LABEL_W = 60
-    n_frames = 6
+    n_cols = min(n_display, 10)
     n_slots = model.slot_attention.num_slots
 
-    canvas = Image.new('RGB', (LABEL_W + n_frames * (S + PAD), (2 + n_slots) * (S + PAD)), (255, 255, 255))
+    canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), (2 + n_slots) * (S + PAD)), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
     try:
         font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 14)
@@ -100,18 +115,21 @@ for i, batch in enumerate(loader):
         y = r * (S + PAD)
         canvas.paste(Image.fromarray((display * 255).astype('uint8')), (x, y))
 
-    draw.text((2, 2), 'Video', fill=(0, 0, 0), font=font)
-    for t in range(n_frames):
-        put_rgb(frames[0, t], 0, t)
+    row0_label = 'Video (burnin)' if is_pretrain else 'Video (rollout)'
+    row1_label = 'Recon (burnin)' if is_pretrain else 'Pred (rollout)'
 
-    draw.text((2, (S + PAD) + 2), 'Recon', fill=(0, 0, 0), font=font)
-    for t in range(n_frames):
-        put_rgb(recons[t], 1, t)
+    draw.text((2, 2), row0_label, fill=(0, 0, 0), font=font)
+    for t in range(n_cols):
+        put_rgb(display_frames[t], 0, t)
+
+    draw.text((2, (S + PAD) + 2), row1_label, fill=(0, 0, 0), font=font)
+    for t in range(n_cols):
+        put_rgb(display_recons[t], 1, t)
 
     for j in range(n_slots):
         y = (2 + j) * (S + PAD) + 2
         draw.text((2, y), f'Slot {j}', fill=(0, 0, 0), font=font)
-        for t in range(n_frames):
+        for t in range(n_cols):
             put_contribution(rgbs[t, j], alphas[t, j], 2 + j, t)
 
     out_dir = os.path.join(cfg.workdir, 'vis_slots', f'step_{step}')

@@ -25,6 +25,8 @@ cfg = SimpleNamespace(**cfg_dict)
 if workdir:
     cfg.workdir = workdir
 
+is_pretrain = getattr(cfg, 'pretrain', True)
+
 model = SlotDynamicsModel(cfg).to(device)
 ckpt_dir = os.path.join(cfg.workdir, 'checkpoints')
 ckpt_path = os.path.join(ckpt_dir, f'step_{step}.pt')
@@ -42,7 +44,9 @@ model.load_state_dict(matched, strict=False)
 model.eval()
 
 burnin = getattr(cfg, 'burnin_frames', 6)
-ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=burnin, stride=4, subsample=2)
+rollout = getattr(cfg, 'rollout_frames', 0) if not is_pretrain else 0
+total_frames = burnin + rollout
+ds = OBJ3DDataset(data_path=cfg_dict.get('data_root', './data/obj3d'), num_frames=total_frames, stride=getattr(cfg, 'slide_stride', 4), subsample=getattr(cfg, 'subsample', 2))
 loader = ds.get_dataloader(batch_size=1, shuffle=True, num_workers=0)
 
 def detect_foreground_slots(alpha, rgb):
@@ -67,70 +71,197 @@ for i, batch in enumerate(loader):
         continue
     frames = batch['video'].to(device)
 
-    # Use model forward to get GRU2-processed slots for all frames
     with torch.no_grad():
         out = model(frames)
-    slots_seq = out['slots']['corrected']       # (1, T, N, 67)
-    recon_seq = out['outputs']['video_burnin']   # (1, T, 3, H, W)
 
-    # Use frame 0 slots for swap
-    slots = slots_seq[:, 0]  # (1, N, 67)
-    feat = model._encode_features(frames)
-    recon, alpha, rgb = model.decoder(slots, return_rgb=True)
+    if is_pretrain:
+        slots_seq = out['slots']['corrected']       # (1, T, N, 67)
+        recon_seq = out['outputs']['video_burnin']   # (1, T, 3, H, W)
 
-    fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
+        slots = slots_seq[:, 0]
+        _, alpha, rgb = model.decoder(slots, return_rgb=True)
+        fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
 
-    if slot_a_arg != 'auto':
-        swap_a = int(slot_a_arg)
-        swap_b = int(slot_b_arg)
-        if swap_a in bg_idxs or swap_b in bg_idxs:
-            print(f'Warning: slot {swap_a if swap_a in bg_idxs else swap_b} appears to be background')
+        if slot_a_arg != 'auto':
+            swap_a = int(slot_a_arg)
+            swap_b = int(slot_b_arg)
+            if swap_a in bg_idxs or swap_b in bg_idxs:
+                print(f'Warning: slot {swap_a if swap_a in bg_idxs else swap_b} appears to be background')
+        else:
+            swap_a, swap_b = fg_idxs[0], fg_idxs[1]
+            print(f'Auto-selected: {swap_a} (score={scores[swap_a]:.4f}), {swap_b} (score={scores[swap_b]:.4f})')
+
+        swapped_seq = slots_seq.clone()
+        if mode == 'cswap':
+            app_a = swapped_seq[:, :, swap_a, :-3].clone()
+            app_b = swapped_seq[:, :, swap_b, :-3].clone()
+            swapped_seq[:, :, swap_a, :-3] = app_b
+            swapped_seq[:, :, swap_b, :-3] = app_a
+        else:
+            tmp = swapped_seq[:, :, swap_a, -1:].clone()
+            swapped_seq[:, :, swap_a, -1:] = swapped_seq[:, :, swap_b, -1:]
+            swapped_seq[:, :, swap_b, -1:] = tmp
+
+        swapped_recon_list = []
+        swapped_alpha_list = []
+        swapped_rgb_list = []
+        for t in range(burnin):
+            sr, sa, srg = model.decoder(swapped_seq[:, t], return_rgb=True)
+            swapped_recon_list.append(sr[0])
+            swapped_alpha_list.append(sa[0])
+            swapped_rgb_list.append(srg[0])
+
+        orig_alpha_list = []
+        orig_rgb_list = []
+        for t in range(burnin):
+            _, oa, org = model.decoder(slots_seq[:, t], return_rgb=True)
+            orig_alpha_list.append(oa[0])
+            orig_rgb_list.append(org[0])
+
+        n_display = burnin
+        n_cols = min(burnin, 6)
+        display_gt = frames[0, :burnin]
+        display_recon = recon_seq[0]
+        display_swapped_recon = swapped_recon_list
+
     else:
-        swap_a, swap_b = fg_idxs[0], fg_idxs[1]
-        print(f'Auto-selected: {swap_a} (score={scores[swap_a]:.4f}), {swap_b} (score={scores[swap_b]:.4f})')
+        # === FINETUNE MODE ===
+        # Get burnin Z and rollout Z from model
+        burnin_Z_all = out['slots']['corrected']     # not Z, this is S
+        # We need the Z representations; re-run the encoding manually
+        feat = model._encode_features(frames)
+        B = 1
+        buf_sz = getattr(cfg, 'buffer_len', total_frames)
+        slot_dim_z = model.static_dim + model.dynamic_dim
+        Z_buffer = torch.zeros(B, buf_sz, cfg.num_slots, slot_dim_z, device=device)
 
-    # Uniform swap across ALL burnin frames: swap appearance between two slots
-    swapped_seq = slots_seq.clone()  # (1, T, N, 67)
-    if mode == 'cswap':
-        app_a = swapped_seq[:, :, swap_a, :-3].clone()  # (1, T, 64)
-        app_b = swapped_seq[:, :, swap_b, :-3].clone()
-        swapped_seq[:, :, swap_a, :-3] = app_b
-        swapped_seq[:, :, swap_b, :-3] = app_a
-    else:
-        tmp = swapped_seq[:, :, swap_a, -1:].clone()  # (1, T, 1)
-        swapped_seq[:, :, swap_a, -1:] = swapped_seq[:, :, swap_b, -1:]
-        swapped_seq[:, :, swap_b, -1:] = tmp
+        slots = None
+        burnin_Z_list = []
+        for t in range(burnin):
+            with torch.no_grad():
+                slots, attn = model._sa(feat[:, t], slots, t)
+            Z_core = model.f_z(slots[:, :, :model.appearance_dim])
+            Z_full = torch.cat([Z_core, slots[:, :, -3:]], dim=-1)
+            burnin_Z_list.append(Z_full)
+            Z_buffer[:, t] = Z_full
 
-    # Decode swapped slots for all frames
-    swapped_recon_list = []
-    swapped_alpha_list = []
-    swapped_rgb_list = []
-    for t in range(burnin):
-        sr, sa, srg = model.decoder(swapped_seq[:, t], return_rgb=True)
-        swapped_recon_list.append(sr[0])
-        swapped_alpha_list.append(sa[0])
-        swapped_rgb_list.append(srg[0])
+        freeze_C = getattr(cfg, 'freeze_C', False)
+        global_C = model.predictor.compute_C(torch.stack(burnin_Z_list, dim=1)) if freeze_C else None
 
-    # Decode original slots for all frames
-    orig_alpha_list = []
-    orig_rgb_list = []
-    for t in range(burnin):
-        _, oa, org = model.decoder(slots_seq[:, t], return_rgb=True)
-        orig_alpha_list.append(oa[0])
-        orig_rgb_list.append(org[0])
+        # Original rollout
+        pred_Z_list = []
+        cur_Z = Z_full
+        for t in range(rollout):
+            C_use = global_C if freeze_C else cur_Z[:, :, :model.static_dim]
+            next_Z = model.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use)
+            pred_Z_list.append(next_Z)
+            if burnin + t < buf_sz:
+                Z_buffer[:, burnin + t] = next_Z
+            cur_Z = next_Z
+        pred_Z = torch.stack(pred_Z_list, dim=1)  # (1, R, N, 67)
 
+        # Decode original rollout
+        pred_S_list = []
+        for t in range(rollout):
+            Z_app = pred_Z[:, t, :, :model.appearance_dim]
+            pos_depth = pred_Z[:, t, :, model.appearance_dim:]
+            S_raw = model.f_z.inverse(Z_app)
+            S = torch.cat([S_raw, pos_depth], dim=-1)
+            pred_S_list.append(S)
+        pred_S = torch.stack(pred_S_list, dim=1)  # (1, R, N, 67)
+
+        # Detect foreground from last burnin frame
+        _, alpha, rgb = model.decoder(slots, return_rgb=True)
+        fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
+
+        if slot_a_arg != 'auto':
+            swap_a = int(slot_a_arg)
+            swap_b = int(slot_b_arg)
+        else:
+            swap_a, swap_b = fg_idxs[0], fg_idxs[1]
+            print(f'Auto-selected: {swap_a} (score={scores[swap_a]:.4f}), {swap_b} (score={scores[swap_b]:.4f})')
+
+        # === Swap rollout: swap in Z-space at first rollout frame, then propagate ===
+        Z_buffer_swap = Z_buffer.clone()
+        # We only need Z_buffer up to burnin for the swap rollout
+        # The burnin Z_buffer is unchanged; only the rollout part differs
+
+        # Swap at the first predicted Z frame
+        if mode == 'cswap':
+            # Swap Z appearance between swap_a and swap_b at t=0 of rollout
+            # Z = [Z^c(static_dim) | Z_d_temp(64-static_dim) | pos(2) | depth(1)]
+            # cswap = swap the full Z representation (appearance = first 64 dims of Z)
+            z_app_a = pred_Z_list[0][:, swap_a, :model.appearance_dim].clone()
+            z_app_b = pred_Z_list[0][:, swap_b, :model.appearance_dim].clone()
+            swapped_Z_0 = pred_Z_list[0].clone()
+            swapped_Z_0[:, swap_a, :model.appearance_dim] = z_app_b
+            swapped_Z_0[:, swap_b, :model.appearance_dim] = z_app_a
+        else:
+            # sswap: swap depth only
+            z_depth_a = pred_Z_list[0][:, swap_a, -1:].clone()
+            z_depth_b = pred_Z_list[0][:, swap_b, -1:].clone()
+            swapped_Z_0 = pred_Z_list[0].clone()
+            swapped_Z_0[:, swap_a, -1:] = z_depth_b
+            swapped_Z_0[:, swap_b, -1:] = z_depth_a
+
+        # Continue rollout from swapped first frame
+        swapped_Z_buffer = Z_buffer.clone()
+        swapped_Z_buffer[:, burnin] = swapped_Z_0
+
+        swapped_pred_Z_list = [swapped_Z_0]
+        cur_Z_swap = swapped_Z_0
+        for t in range(1, rollout):
+            C_use = global_C if freeze_C else cur_Z_swap[:, :, :model.static_dim]
+            next_Z = model.predictor(cur_Z_swap, swapped_Z_buffer[:, :burnin + t], C=C_use)
+            swapped_pred_Z_list.append(next_Z)
+            if burnin + t < buf_sz:
+                swapped_Z_buffer[:, burnin + t] = next_Z
+            cur_Z_swap = next_Z
+
+        # Decode swapped rollout
+        swapped_pred_S_list = []
+        for t in range(rollout):
+            Z_app = swapped_pred_Z_list[t][:, :, :model.appearance_dim]
+            pos_depth = swapped_pred_Z_list[t][:, :, model.appearance_dim:]
+            S_raw = model.f_z.inverse(Z_app)
+            S = torch.cat([S_raw, pos_depth], dim=-1)
+            swapped_pred_S_list.append(S)
+
+        # Decode original and swapped for per-slot display
+        swapped_recon_list = []
+        swapped_alpha_list = []
+        swapped_rgb_list = []
+        orig_alpha_list = []
+        orig_rgb_list = []
+
+        for t in range(rollout):
+            # Original
+            _, oa, org = model.decoder(pred_S[:, t], return_rgb=True)
+            orig_alpha_list.append(oa[0])
+            orig_rgb_list.append(org[0])
+            # Swapped
+            sr, sa, srg = model.decoder(swapped_pred_S_list[t], return_rgb=True)
+            swapped_recon_list.append(sr[0])
+            swapped_alpha_list.append(sa[0])
+            swapped_rgb_list.append(srg[0])
+
+        n_display = rollout
+        n_cols = min(rollout, 10)
+        display_gt = frames[0, burnin:burnin + rollout]
+        display_recon = [model.decoder(pred_S[:, t], return_rgb=True)[0][0] for t in range(rollout)]
+        display_swapped_recon = swapped_recon_list
+
+    # === Common visualization ===
     n_slots = model.slot_attention.num_slots
-    n_cols = min(burnin, 6)
     slot_order = [swap_a, swap_b] + [j for j in range(n_slots) if j not in (swap_a, swap_b)]
 
-    # Rows: GT(0) + Recon(1) + ReconSwapped(2) + 2*N_slots slot rows
     row_offset = 3
     n_rows = row_offset + 2 * n_slots
 
-    S = 64
+    S_px = 64
     PAD = 2
     LABEL_W = 84
-    canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), n_rows * (S + PAD)), (255, 255, 255))
+    canvas = Image.new('RGB', (LABEL_W + n_cols * (S_px + PAD), n_rows * (S_px + PAD)), (255, 255, 255))
     draw = ImageDraw.Draw(canvas)
     try:
         font = ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 12)
@@ -139,53 +270,41 @@ for i, batch in enumerate(loader):
 
     def put_rgb(t, r, c):
         arr = t.detach().cpu().clamp(0, 1).permute(1, 2, 0).numpy()
-        x = LABEL_W + c * (S + PAD)
-        y = r * (S + PAD)
+        x = LABEL_W + c * (S_px + PAD)
+        y = r * (S_px + PAD)
         canvas.paste(Image.fromarray((arr * 255).astype('uint8')), (x, y))
 
     def put_contrib(rgb_t, alpha_t, r, c):
         arr_rgb = rgb_t.detach().cpu().permute(1, 2, 0).numpy()
         arr_a = alpha_t.detach().cpu().numpy()
         disp = arr_rgb * arr_a[..., None] + (1.0 - arr_a[..., None])
-        x = LABEL_W + c * (S + PAD)
-        y = r * (S + PAD)
+        x = LABEL_W + c * (S_px + PAD)
+        y = r * (S_px + PAD)
         canvas.paste(Image.fromarray((disp * 255).astype('uint8')), (x, y))
 
     def heatmap_rgb(val):
         h = 0.67 * (1.0 - val)
         return tuple(int(c * 255) for c in hsv_to_rgb(h, 1.0, 1.0))
 
-    def put_attn(attn_map, r, c, global_max):
-        arr = attn_map.detach().cpu().numpy()
-        arr = Image.fromarray(arr, mode='F')
-        arr = arr.resize((S, S), Image.BILINEAR)
-        arr = np.array(arr)
-        norm_max = max(global_max, 0.004)
-        arr = np.clip(arr / norm_max, 0, 1)
-        rgb_arr = np.zeros((S, S, 3), dtype='uint8')
-        for py in range(S):
-            for px in range(S):
-                rgb_arr[py, px] = heatmap_rgb(arr[py, px])
-        x = LABEL_W + c * (S + PAD)
-        y = r * (S + PAD)
-        canvas.paste(Image.fromarray(rgb_arr), (x, y))
-
-    # Row 0: Original GT
-    draw.text((2, 2), 'Original', fill=(0, 0, 0), font=font)
+    # Row 0: GT
+    gt_label = 'Original' if is_pretrain else 'GT Rollout'
+    draw.text((2, 2), gt_label, fill=(0, 0, 0), font=font)
     for t in range(n_cols):
-        put_rgb(frames[0, t], 0, t)
+        put_rgb(display_gt[t], 0, t)
 
-    # Row 1: Recon (original model forward)
-    draw.text((2, (S + PAD) + 2), 'Recon', fill=(0, 0, 0), font=font)
+    # Row 1: Recon
+    recon_label = 'Recon' if is_pretrain else 'Pred Rollout'
+    draw.text((2, (S_px + PAD) + 2), recon_label, fill=(0, 0, 0), font=font)
     for t in range(n_cols):
-        put_rgb(recon_seq[0, t], 1, t)
+        put_rgb(display_recon[t], 1, t)
 
-    # Row 2: Recon Swapped (swap propagated through GRU2)
-    draw.text((2, 2 * (S + PAD) + 2), 'Recon Swapped', fill=(0, 0, 0), font=font)
+    # Row 2: Recon Swapped
+    swap_label = 'Recon Swapped' if is_pretrain else 'Pred Swapped'
+    draw.text((2, 2 * (S_px + PAD) + 2), swap_label, fill=(0, 0, 0), font=font)
     for t in range(n_cols):
-        put_rgb(swapped_recon_list[t], 2, t)
+        put_rgb(display_swapped_recon[t], 2, t)
 
-    # Row 3+: slot contributions BEFORE/AFTER for all frames
+    # Row 3+: slot contributions BEFORE/AFTER
     for idx_in_row, si in enumerate(slot_order):
         r_before = row_offset + 2 * idx_in_row
         r_after = row_offset + 2 * idx_in_row + 1
@@ -196,16 +315,21 @@ for i, batch in enumerate(loader):
             tag += ' (←A)' if mode == 'cswap' else ' (depth ←A)'
         if si in bg_idxs:
             tag += ' (bg)'
-        draw.text((2, r_before * (S + PAD) + 2), f'{tag} BEFORE', fill=(0, 0, 0), font=font)
-        draw.text((2, r_after * (S + PAD) + 2), f'{tag} AFTER', fill=(0, 0, 0), font=font)
+        draw.text((2, r_before * (S_px + PAD) + 2), f'{tag} BEFORE', fill=(0, 0, 0), font=font)
+        draw.text((2, r_after * (S_px + PAD) + 2), f'{tag} AFTER', fill=(0, 0, 0), font=font)
         for t in range(n_cols):
             put_contrib(orig_rgb_list[t][si], orig_alpha_list[t][si, 0], r_before, t)
             put_contrib(swapped_rgb_list[t][si], swapped_alpha_list[t][si, 0], r_after, t)
 
-    y = n_rows * (S + PAD) + 2
-    for si in range(slots.shape[1]):
-        pos = slots[0, si, -3:-1]
-        dep = slots[0, si, -1:]
+    # Slot position/depth info
+    if is_pretrain:
+        info_slots = out['slots']['corrected'][0, 0]
+    else:
+        info_slots = slots[0]
+    y = n_rows * (S_px + PAD) + 2
+    for si in range(n_slots):
+        pos = info_slots[si, -3:-1]
+        dep = info_slots[si, -1:]
         tag = "BG" if si in bg_idxs else (
             f"swap[{swap_a}]" if si == swap_a else
             f"swap[{swap_b}]" if si == swap_b else str(si)

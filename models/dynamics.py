@@ -147,12 +147,12 @@ class SlotDynamicsModel(nn.Module):
             self.encoder = torch.compile(self.encoder)
 
         if getattr(config, 'freeze_slot', False):
-            for name in ['encoder', 'slot_attention', 'decoder']:
+            for name in ['encoder', 'slot_attention', 'decoder', 'gru2', 'gru2_proj']:
                 mod = getattr(self, name, None)
                 if mod is not None:
                     for p in mod.parameters():
                         p.requires_grad_(False)
-            print("Frozen: encoder + slot_attention + decoder (ISA)")
+            print("Frozen: encoder + slot_attention + decoder + gru2 + gru2_proj (ISA)")
 
         if getattr(config, 'continue_pretrain', False):
             for p in self.encoder.parameters():
@@ -261,10 +261,29 @@ class SlotDynamicsModel(nn.Module):
         burnin_S = []
         burnin_Z = []
         slots = None
+        gru2_hidden = None
+        prev_appearance = None
         for t in range(burnin):
             feat_t = feat[:, t]
+            # Apply GRU2 for cross-frame appearance propagation (same as pretrain)
+            if t > 0 and slots is not None:
+                new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                slots = torch.cat([
+                    new_appearance,
+                    slots[:, :, -3:-1].contiguous(),
+                    slots[:, :, -1:].contiguous(),
+                ], dim=-1)
             with torch.no_grad():
                 slots, attn = self._sa(feat_t, slots, t)
+            # Store appearance for next GRU2 step
+            prev_appearance = slots[:, :, :-3].detach()
+            if t == 0:
+                BN = prev_appearance.shape[0] * prev_appearance.shape[1]
+                gru2_hidden = torch.zeros(BN, self.gru2_hidden_dim, device=frames.device)
+                gru2_hidden = self.gru2(
+                    prev_appearance.reshape(-1, self.appearance_dim),
+                    gru2_hidden.reshape(-1, self.gru2_hidden_dim),
+                )
             burnin_S.append(slots)
             Z_core = self.f_z(slots[:, :, :self.appearance_dim])
             Z_full = torch.cat([Z_core, slots[:, :, -3:]], dim=-1)
