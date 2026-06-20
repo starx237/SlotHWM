@@ -74,7 +74,7 @@ lambda_energy: 0.10
 lambda_static: 0.00
 lambda_rev: 0.005
 lambda_recon_burnin: 0.0
-lambda_recon_rollout: 1.0
+lambda_recon_rollout: 0.01
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
@@ -94,8 +94,8 @@ keep_last_checkpoints: 20
 workdir: "./experiments/obj3d"
 
 # 断点续训
-resume: true
-resume_step: 6000
+resume: false
+resume_step: 0
 
 # 冻结 ISA 模块（finetune 阶段启用）
 freeze_slot: true

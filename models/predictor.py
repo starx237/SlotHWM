@@ -93,10 +93,6 @@ class SlotPredictor(nn.Module):
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].weight)
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].bias)
 
-        self.depth_gate = nn.Linear(self.dyn_total_dim, 1)
-        nn.init.zeros_(self.depth_gate.weight)
-        nn.init.zeros_(self.depth_gate.bias)
-
     def compute_C(self, burnin_slots):
         if not self.freeze_C:
             return burnin_slots[:, -1, :, :self.static_dim]
@@ -137,9 +133,10 @@ class SlotPredictor(nn.Module):
         next_dyn = self.fusion_mlp(q_next)
 
         if depth_anchor is not None:
+            pred_depth = next_dyn[:, :, -1:]
             upper = torch.max(depth_anchor * 2,
                               torch.tensor(self.depth_max, device=depth_anchor.device))
-            depth = depth_anchor + torch.tanh(self.depth_gate(next_dyn)) * (upper - depth_anchor)
+            depth = depth_anchor + torch.tanh(pred_depth - depth_anchor) * (upper - depth_anchor)
             depth = torch.clamp(depth, min=0)
             next_dyn = torch.cat([
                 next_dyn[:, :, :-1],
