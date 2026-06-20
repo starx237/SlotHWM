@@ -50,7 +50,7 @@ num_layers: 2
 h_layers: 1
 out_mlp: false
 out_hidden_layers: 1
-pre_norm: false
+pre_norm: true
 dropout_rate: 0.1
 delta_t: 0.08
 integrator_method: "Euler"
@@ -82,6 +82,7 @@ rev_mlp_hidden: 128
 rev_grad_max_norm: 0.1
 
 freeze_C: true
+zero_init_dyn: true
 
 # 日志与存档
 log_every: 2

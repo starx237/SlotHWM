@@ -126,14 +126,10 @@ for i, batch in enumerate(loader):
 
     else:
         # === FINETUNE MODE ===
-        # Get burnin Z and rollout Z from model
-        burnin_Z_all = out['slots']['corrected']     # not Z, this is S
-        # We need the Z representations; re-run the encoding manually
         feat = model._encode_features(frames)
         B = 1
         buf_sz = getattr(cfg, 'buffer_len', total_frames)
         slot_dim_z = model.static_dim + model.dynamic_dim
-        Z_buffer = torch.zeros(B, buf_sz, cfg.num_slots, slot_dim_z, device=device)
 
         slots = None
         burnin_Z_list = []
@@ -143,22 +139,22 @@ for i, batch in enumerate(loader):
             Z_core = model.f_z(slots[:, :, :model.appearance_dim])
             Z_full = torch.cat([Z_core, slots[:, :, -3:]], dim=-1)
             burnin_Z_list.append(Z_full)
-            Z_buffer[:, t] = Z_full
 
         freeze_C = getattr(cfg, 'freeze_C', False)
         global_C = model.predictor.compute_C(torch.stack(burnin_Z_list, dim=1)) if freeze_C else None
 
         # Original rollout
+        Z_buffer_orig = list(burnin_Z_list)
         pred_Z_list = []
-        cur_Z = Z_full
+        cur_Z = burnin_Z_list[-1]
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_Z[:, :, :model.static_dim]
-            next_Z = model.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use)
+            Z_buf_t = torch.stack(Z_buffer_orig[:burnin + t], dim=1)
+            next_Z = model.predictor(cur_Z, Z_buf_t, C=C_use)
             pred_Z_list.append(next_Z)
-            if burnin + t < buf_sz:
-                Z_buffer[:, burnin + t] = next_Z
+            Z_buffer_orig.append(next_Z)
             cur_Z = next_Z
-        pred_Z = torch.stack(pred_Z_list, dim=1)  # (1, R, N, 67)
+        pred_Z = torch.stack(pred_Z_list, dim=1)
 
         # Decode original rollout
         pred_S_list = []
@@ -168,7 +164,7 @@ for i, batch in enumerate(loader):
             S_raw = model.f_z.inverse(Z_app)
             S = torch.cat([S_raw, pos_depth], dim=-1)
             pred_S_list.append(S)
-        pred_S = torch.stack(pred_S_list, dim=1)  # (1, R, N, 67)
+        pred_S = torch.stack(pred_S_list, dim=1)
 
         # Detect foreground from last burnin frame
         _, alpha, rgb = model.decoder(slots, return_rgb=True)
@@ -181,41 +177,35 @@ for i, batch in enumerate(loader):
             swap_a, swap_b = fg_idxs[0], fg_idxs[1]
             print(f'Auto-selected: {swap_a} (score={scores[swap_a]:.4f}), {swap_b} (score={scores[swap_b]:.4f})')
 
-        # === Swap rollout: swap in Z-space at first rollout frame, then propagate ===
-        Z_buffer_swap = Z_buffer.clone()
-        # We only need Z_buffer up to burnin for the swap rollout
-        # The burnin Z_buffer is unchanged; only the rollout part differs
+        # === Swap: apply to burnin Z, recompute C, then full rollout ===
+        swapped_burnin_Z_list = []
+        for z in burnin_Z_list:
+            sz = z.clone()
+            if mode == 'cswap':
+                app_a = sz[:, swap_a, :model.appearance_dim].clone()
+                app_b = sz[:, swap_b, :model.appearance_dim].clone()
+                sz[:, swap_a, :model.appearance_dim] = app_b
+                sz[:, swap_b, :model.appearance_dim] = app_a
+            else:
+                depth_a = sz[:, swap_a, -1:].clone()
+                depth_b = sz[:, swap_b, -1:].clone()
+                sz[:, swap_a, -1:] = depth_b
+                sz[:, swap_b, -1:] = depth_a
+            swapped_burnin_Z_list.append(sz)
 
-        # Swap at the first predicted Z frame
-        if mode == 'cswap':
-            # Swap Z appearance between swap_a and swap_b at t=0 of rollout
-            # Z = [Z^c(static_dim) | Z_d_temp(64-static_dim) | pos(2) | depth(1)]
-            # cswap = swap the full Z representation (appearance = first 64 dims of Z)
-            z_app_a = pred_Z_list[0][:, swap_a, :model.appearance_dim].clone()
-            z_app_b = pred_Z_list[0][:, swap_b, :model.appearance_dim].clone()
-            swapped_Z_0 = pred_Z_list[0].clone()
-            swapped_Z_0[:, swap_a, :model.appearance_dim] = z_app_b
-            swapped_Z_0[:, swap_b, :model.appearance_dim] = z_app_a
-        else:
-            # sswap: swap depth only
-            z_depth_a = pred_Z_list[0][:, swap_a, -1:].clone()
-            z_depth_b = pred_Z_list[0][:, swap_b, -1:].clone()
-            swapped_Z_0 = pred_Z_list[0].clone()
-            swapped_Z_0[:, swap_a, -1:] = z_depth_b
-            swapped_Z_0[:, swap_b, -1:] = z_depth_a
+        swapped_global_C = model.predictor.compute_C(
+            torch.stack(swapped_burnin_Z_list, dim=1)) if freeze_C else None
 
-        # Continue rollout from swapped first frame
-        swapped_Z_buffer = Z_buffer.clone()
-        swapped_Z_buffer[:, burnin] = swapped_Z_0
-
-        swapped_pred_Z_list = [swapped_Z_0]
-        cur_Z_swap = swapped_Z_0
-        for t in range(1, rollout):
-            C_use = global_C if freeze_C else cur_Z_swap[:, :, :model.static_dim]
-            next_Z = model.predictor(cur_Z_swap, swapped_Z_buffer[:, :burnin + t], C=C_use)
+        # Rollout from swapped burnin
+        Z_buffer_swap = list(swapped_burnin_Z_list)
+        swapped_pred_Z_list = []
+        cur_Z_swap = swapped_burnin_Z_list[-1]
+        for t in range(rollout):
+            C_use = swapped_global_C if freeze_C else cur_Z_swap[:, :, :model.static_dim]
+            Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
+            next_Z = model.predictor(cur_Z_swap, Z_buf_t, C=C_use)
             swapped_pred_Z_list.append(next_Z)
-            if burnin + t < buf_sz:
-                swapped_Z_buffer[:, burnin + t] = next_Z
+            Z_buffer_swap.append(next_Z)
             cur_Z_swap = next_Z
 
         # Decode swapped rollout

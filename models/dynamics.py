@@ -256,10 +256,10 @@ class SlotDynamicsModel(nn.Module):
 
         buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
         slot_dim_z = self.static_dim + self.dynamic_dim
-        Z_buffer = torch.zeros(B, buf_sz, self.config.num_slots, slot_dim_z, device=frames.device)
 
         burnin_S = []
         burnin_Z = []
+        burnin_Z_buffer = []
         slots = None
         gru2_hidden = None
         prev_appearance = None
@@ -288,7 +288,7 @@ class SlotDynamicsModel(nn.Module):
             Z_core = self.f_z(slots[:, :, :self.appearance_dim])
             Z_full = torch.cat([Z_core, slots[:, :, -3:]], dim=-1)
             burnin_Z.append(Z_full)
-            Z_buffer[:, t] = Z_full
+            burnin_Z_buffer.append(Z_full)
         burnin_S = torch.stack(burnin_S, dim=1)
         burnin_Z = torch.stack(burnin_Z, dim=1)
 
@@ -297,18 +297,19 @@ class SlotDynamicsModel(nn.Module):
         pred_Z_list = []
         energy_pairs = []
         cur_Z = Z_full
+        Z_buffer = list(burnin_Z_buffer)
         qp_metrics = {"q_next_list": [], "p_next_list": [],
                       "fresh_q_list": [], "fresh_p_list": []}
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_Z[:, :, :self.static_dim]
-            out = self.predictor(cur_Z, Z_buffer[:, :burnin + t], C=C_use,
+            Z_buf_t = torch.stack(Z_buffer[:burnin + t], dim=1)
+            out = self.predictor(cur_Z, Z_buf_t, C=C_use,
                                  return_energy=True, return_qp=True)
             next_Z, ep, (fresh_q, fresh_p), (q_next, p_next) = out
             pred_Z_list.append(next_Z)
             if ep is not None:
                 energy_pairs.append(ep)
-            if burnin + t < buf_sz:
-                Z_buffer[:, burnin + t] = next_Z
+            Z_buffer.append(next_Z)
             cur_Z = next_Z
             qp_metrics["fresh_q_list"].append(fresh_q)
             qp_metrics["fresh_p_list"].append(fresh_p)

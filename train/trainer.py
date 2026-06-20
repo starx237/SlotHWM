@@ -583,13 +583,17 @@ class Trainer:
         return ckpt.get("step", 0), ckpt.get("loss", float("inf"))
 
     def load_pretrained(self, path):
-        '''仅加载 STATM-SAVi 预训练权重（encoder, slot_attention, decoder）。
-        忽略预测模块（f_z, predictor, mlp_rev 等）的缺失/不匹配。'''
+        '''仅加载 ISA 预训练权重（encoder, slot_attention, decoder, gru2, gru2_proj, f_z）。
+        忽略预测模块（predictor, mlp_rev）的缺失/不匹配。'''
         ckpt = torch.load(path, map_location=self.device)
         model_state = self.model.state_dict()
         ckpt_state = ckpt["model"]
 
+        _isa_prefixes = ('encoder.', 'slot_attention.', 'decoder.', 'gru2.', 'gru2_proj.', 'f_z.')
         loaded = self._match_and_load(model_state, ckpt_state)
+        loaded = {k: v for k, v in loaded.items()
+                  if any(k.replace('_orig_mod.', '').startswith(p) for p in _isa_prefixes)}
+
         skipped = {k: v.shape for k, v in ckpt_state.items()
                    if not any(k.replace('_orig_mod.', '') == mk.replace('_orig_mod.', '')
                               and v.shape == model_state[mk].shape for mk in model_state)}

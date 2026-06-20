@@ -62,6 +62,7 @@ class SlotPredictor(nn.Module):
             h_layers=getattr(config, 'h_layers', 1),
             out_mlp=getattr(config, 'out_mlp', False),
             out_hidden_layers=getattr(config, 'out_hidden_layers', 1),
+            zero_init=getattr(config, 'zero_init_dyn', False),
         )
 
         # 时空推理模块：freeze_C=true 时只作用在 Z^d，否则作用在完整 Z

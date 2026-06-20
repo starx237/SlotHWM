@@ -143,7 +143,8 @@ class SpaceAttentionBlock(nn.Module):
                  mlp_size: int,
                  pre_norm: bool = False,
                  weight_init=None,
-                 dropout_rate: float = 0.1
+                 dropout_rate: float = 0.1,
+                 zero_init: bool = False,
                  ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -176,6 +177,13 @@ class SpaceAttentionBlock(nn.Module):
         if self.dropout_rate > 0:
             self.att_drop = nn.Dropout(self.dropout_rate)
             self.ff_dropout = nn.Dropout(self.dropout_rate)
+
+        if zero_init:
+            if self.num_heads > 1:
+                nn.init.zeros_(self.dense_o.weight)
+                nn.init.zeros_(self.dense_o.bias)
+            nn.init.zeros_(self.mlp.net[-1].weight)
+            nn.init.zeros_(self.mlp.net[-1].bias)
 
     def forward(self, inputs: Array, buffer: Array,
                 padding_mask: Optional[Array] = None,
@@ -402,7 +410,7 @@ class qp_Attentions(nn.Module):
                  weight_init=None,
                  num_layers: int = 1,
                  dropout_rate: float = 0.1,
-                 # 最终输出 MLP 配置
+                 zero_init: bool = False,
                  out_mlp=False,
                  out_hidden_layers=1
                  ):
@@ -422,7 +430,6 @@ class qp_Attentions(nn.Module):
         assert qkv_size % num_heads == 0, "qkv_size 必须能被 num_heads 整除"
         self.head_dim = qkv_size // num_heads
 
-        # 构建多层空间注意力和时间注意力模块
         self.space_model = nn.ModuleList()
         self.time_model = nn.ModuleList()
         for i in range(self.num_layers):
@@ -433,7 +440,8 @@ class qp_Attentions(nn.Module):
                                    mlp_size=mlp_size,
                                    pre_norm=pre_norm,
                                    weight_init=weight_init,
-                                   dropout_rate=dropout_rate))
+                                   dropout_rate=dropout_rate,
+                                   zero_init=zero_init))
             self.time_model.append(
                 TimeAttentionBlock(embed_dim=embed_dim,
                                   num_heads=num_heads,
@@ -484,15 +492,18 @@ class HamiltonianNet(nn.Module):
     '''
     哈密顿量网络，输入 q, p, C，输出标量能量 H。
     将能量分解为三项：
-      H = sum_i MLP_K(P_i, C_i) + sum_i MLP_V(Q_i, C_i) + sum(Transformer_I(Concat(Q_t|C_t)))
-    其中第一项为动能，第二项为势能，第三项为物体间交互能（自掩码，不计算自交互）。
+      H = T(P, C) + sum_i MLP_V(Q_i, C_i) + sum(Transformer_I(Concat(Q_t|C_t)))
+    动能采用质量矩阵形式：
+      M^{-1}(C) = L(C)L(C)^T + eps*I,  L(C) = MLP_L(C) 输出下三角矩阵
+      T = 0.5 * sum_i P_i^T M^{-1}(C_i) P_i
+    当 P=0 时 T=0，保证 zero init。
     '''
     def __init__(self,
-                 embed_dim: int,  # P, Q 的维度即 dynamic_dim
+                 embed_dim: int,
                  num_heads: int,
                  qkv_size: int,
                  mlp_size: int,
-                 static_dim: int = None,  # C 的维度，默认等于 embed_dim
+                 static_dim: int = None,
                  num_layers: int = 1,
                  pre_norm: bool = False,
                  weight_init=None,
@@ -511,18 +522,19 @@ class HamiltonianNet(nn.Module):
         self.weight_init = weight_init
         self.dropout_rate = dropout_rate
 
-        # 动能网络 MLP_K(P_i, C) — 2 层隐藏层，hidden_dim//2，SiLU
-        self.kinetic_net = MLP(
-            input_size=embed_dim + static_dim,
+        tril_size = embed_dim * (embed_dim + 1) // 2
+        self.tril_mlp = MLP(
+            input_size=static_dim,
             hidden_size=mlp_size // 2,
-            output_size=1,
+            output_size=tril_size,
             num_hidden_layers=2,
-            activate_output=True,
-            weight_init=weight_init,
+            activate_output=False,
             activation_fn=nn.SiLU,
         )
+        nn.init.zeros_(self.tril_mlp.net[-1].weight)
+        nn.init.zeros_(self.tril_mlp.net[-1].bias)
+        self.eps = 1e-4
 
-        # 势能网络 MLP_V(Q_i, C) — 2 层隐藏层，hidden_dim//2，Softplus
         self.potential_net = MLP(
             input_size=embed_dim + static_dim,
             hidden_size=mlp_size // 2,
@@ -533,8 +545,6 @@ class HamiltonianNet(nn.Module):
             activation_fn=nn.Softplus,
         )
 
-        # 交互能：TransformerBlock（带自掩码）+ MLP，与 baseline 一致
-        # 注意：关闭 dropout（避免影响能量守恒），激活函数用 Softplus
         self.interaction_transformer = TransformerBlock(
             embed_dim=embed_dim + static_dim,
             num_heads=num_heads,
@@ -554,33 +564,25 @@ class HamiltonianNet(nn.Module):
         )
 
     def forward(self, q: Array, p: Array, C: Array) -> Array:
-        '''
-        Args:
-            q: 广义坐标 (B, N, D)
-            p: 广义动量 (B, N, D)
-            C: 静态特征 (B, N, D)
-        Returns:
-            H: 总能量标量 (B,)
-        '''
-        # 动能项：对每个物体 i，计算 MLP_K(P_i, C_i)，然后求和
-        kinetic_input = torch.cat([p, C], dim=-1)  # (B, N, 2*D)
-        kinetic = self.kinetic_net(kinetic_input).squeeze(-1)  # (B, N)
-        kinetic = kinetic.sum(dim=1)  # (B,)
-
-        # 势能项：对每个物体 i，计算 MLP_V(Q_i, C_i)，然后求和
-        potential_input = torch.cat([q, C], dim=-1)  # (B, N, 2*D)
-        potential = self.potential_net(potential_input).squeeze(-1)  # (B, N)
-        potential = potential.sum(dim=1)  # (B,)
-
-        # 交互能：TransformerBlock（带自掩码）+ MLP，与 baseline 一致
         B, N, D = q.shape
-        combined = torch.cat([q, C], dim=-1)  # (B, N, embed_dim + static_dim)
 
-        x = self.interaction_transformer(combined, symmetrize_attn=True, self_mask=True)  # (B, N, D')
-        interaction = self.interaction_mlp(x).squeeze(-1)  # (B, N)
-        interaction = interaction.sum(dim=1)  # (B,)
+        tril_elems = self.tril_mlp(C)
+        L = torch.zeros(B, N, D, D, device=C.device, dtype=C.dtype)
+        indices = torch.tril_indices(D, D, device=C.device)
+        L[:, :, indices[0], indices[1]] = tril_elems
+        M_inv = L @ L.transpose(-1, -2) + self.eps * torch.eye(D, device=C.device, dtype=C.dtype)
+        kinetic = 0.5 * (p.unsqueeze(-2) @ M_inv @ p.unsqueeze(-1)).squeeze(-1).squeeze(-1)
+        kinetic = kinetic.sum(dim=1)
 
-        # 总能量
+        potential_input = torch.cat([q, C], dim=-1)
+        potential = self.potential_net(potential_input).squeeze(-1)
+        potential = potential.sum(dim=1)
+
+        combined = torch.cat([q, C], dim=-1)
+        x = self.interaction_transformer(combined, symmetrize_attn=True, self_mask=True)
+        interaction = self.interaction_mlp(x).squeeze(-1)
+        interaction = interaction.sum(dim=1)
+
         H = kinetic + potential + interaction
         return H
 
@@ -595,11 +597,11 @@ class Slot_HamiltonianNet(nn.Module):
     '''
     def __init__(self,
                  num_slots: int,
-                 embed_dim: int,  # q、p 和动态子空间的维度
+                 embed_dim: int,
                  num_heads: int,
                  qkv_size: int,
                  mlp_size: int,
-                 static_dim: int = None,  # C 的维度，默认等于 embed_dim
+                 static_dim: int = None,
                  integrator_method: str = "Leapfrog",
                  pre_norm: bool = False,
                  weight_init=None,
@@ -607,7 +609,8 @@ class Slot_HamiltonianNet(nn.Module):
                  num_layers: int = 1,
                  h_layers=1,
                  out_mlp=False,
-                 out_hidden_layers=1
+                 out_hidden_layers=1,
+                 zero_init: bool = False,
                  ):
         super().__init__()
         if static_dim is None:
@@ -626,7 +629,6 @@ class Slot_HamiltonianNet(nn.Module):
         self.out_hidden_layers = out_hidden_layers
         self.integrator_method = integrator_method
 
-        # q-p 网络：从 Slot 中提取位置和动量信息
         self.qp_net = qp_Attentions(
             embed_dim=self.embed_dim,
             num_heads=self.num_heads,
@@ -636,6 +638,7 @@ class Slot_HamiltonianNet(nn.Module):
             weight_init=self.weight_init,
             num_layers=self.num_layers,
             dropout_rate=self.dropout_rate,
+            zero_init=zero_init,
             out_mlp=self.out_mlp,
             out_hidden_layers=self.out_hidden_layers
         )
@@ -684,10 +687,6 @@ class Slot_HamiltonianNet(nn.Module):
               return_qp=True    → (…, (fresh_q, fresh_p))
               顺序：q_next, p_next, [energy_pair], [fresh_qp]
         '''
-        if self.pre_norm:
-            slot = self.mlp_norm(slot)
-            buffer = self.mlp_norm(buffer)
-
         q, p = self.qp_net(slot, buffer)
         # 第四次修改：P_t = MLP_P(CrossAtt_P(Z_t^d, history), C_t)
         if C is not None:
