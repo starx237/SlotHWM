@@ -61,7 +61,7 @@ num_steps: 200000
 batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
-max_grad_norm: 1.0
+max_grad_norm: 2.5
 burnin_frames: 6
 rollout_frames: 10
 slide_stride: 4
@@ -87,15 +87,15 @@ depth_max: 0.4
 
 # 日志与存档
 log_every: 2
-eval_every_steps: 1000
-viz_every_steps: 5000
+eval_every_steps: 2000
+viz_every_steps: 2000
 save_every: 1000
 keep_last_checkpoints: 20
 workdir: "./experiments/obj3d"
 
 # 断点续训
-resume: false
-resume_step: 0
+resume: true
+resume_step: 6000
 
 # 冻结 ISA 模块（finetune 阶段启用）
 freeze_slot: true

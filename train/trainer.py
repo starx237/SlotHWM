@@ -401,26 +401,46 @@ class Trainer:
             if self.wandb.enabled:
                 self.wandb.log({f"eval/recon_{idx}": self.wandb.wandb.Image(path)}, step=step)
 
+    @staticmethod
+    def _detect_foreground_slots(alpha, rgb, sat_threshold=0.05, min_coverage=0.005, min_pixels=20):
+        B, N, C, H, W = rgb.shape
+        dominant = alpha.argmax(dim=1).squeeze(1)
+        scores = []
+        for j in range(N):
+            coverage = (alpha[0, j, 0] > 0.3).float().mean().item()
+            if coverage < min_coverage:
+                scores.append(-1.0)
+                continue
+            mask = (dominant[0] == j) & (alpha[0, j, 0] > 0.3)
+            if mask.sum() < min_pixels:
+                scores.append(-1.0)
+                continue
+            pix = rgb[0, j, :, mask]
+            sat = pix.std(dim=0).mean().item()
+            scores.append(sat)
+        import numpy as np
+        scores = np.array(scores)
+        fg_idx = np.argsort(-scores).tolist()
+        fg_idx = [j for j in fg_idx if scores[j] >= sat_threshold]
+        bg_idx = [j for j in range(N) if scores[j] < sat_threshold]
+        return fg_idx, bg_idx, scores
+
     def _compute_swap_rollout(self, out, burnin, rollout, target_size):
         '''Compute swap test for rollout: swap appearance of two foreground slots
         in burnin Z, recompute C, then full rollout from swapped burnin.
+        Uses same foreground detection as vis_swap.py (color saturation filtering).
         Returns list of (3, H, W) tensors (decoded swap rollout frames).'''
         with torch.no_grad():
             pred_Z = out.get("slots", {}).get("predicted")
             if pred_Z is None or pred_Z.shape[1] == 0:
                 return [torch.zeros(3, target_size, target_size, device=self.device)] * rollout
 
-            # Detect foreground slots from alpha of decoded burnin last frame
             burnin_S = out["slots"]["corrected"][:1]
             last_burnin_S = burnin_S[:, -1]
-            _, alpha, _ = self.model.decoder(last_burnin_S, return_rgb=True)
+            _, alpha, rgb = self.model.decoder(last_burnin_S, return_rgb=True)
 
-            N = alpha.shape[1]
-            dominant = alpha.argmax(dim=1).squeeze(1)
-            slot_pixels = [(dominant[0] == j).sum().item() for j in range(N)]
-            fg_sorted = sorted(range(N), key=lambda j: -slot_pixels[j])
-
-            swap_a, swap_b = fg_sorted[0], fg_sorted[1]
+            fg_idxs, bg_idxs, scores = self._detect_foreground_slots(alpha, rgb)
+            swap_a, swap_b = fg_idxs[0], fg_idxs[1]
 
             app_dim = self.model.appearance_dim
 
@@ -444,29 +464,25 @@ class Trainer:
             else:
                 swapped_global_C = None
 
-            depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
+            swapped_depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
 
-            # Rollout from swapped burnin last frame
-            B = 1
-            buf_sz = getattr(self.config, 'buffer_len', burnin + rollout)
-            slot_dim_z = self.model.static_dim + self.model.dynamic_dim
+            # Rollout from swapped burnin (same logic as vis_swap.py)
             Z_buffer_swap = list(swapped_burnin_Z_list)
+            swapped_pred_Z_list = []
             cur_Z = swapped_burnin_Z_list[-1]
-            swap_pred_Z = [cur_Z]
-            for t in range(1, rollout):
+            for t in range(rollout):
                 C_use = swapped_global_C if freeze_C else cur_Z[:, :, :self.model.static_dim]
                 Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
                 next_Z = self.model.predictor(cur_Z, Z_buf_t, C=C_use,
-                                              depth_anchor=depth_anchor)
-                swap_pred_Z.append(next_Z)
-                if burnin + t < buf_sz:
-                    Z_buffer_swap.append(next_Z)
+                                              depth_anchor=swapped_depth_anchor)
+                swapped_pred_Z_list.append(next_Z)
+                Z_buffer_swap.append(next_Z)
                 cur_Z = next_Z
 
             # Decode swapped rollout
             swap_recon = []
             for t in range(rollout):
-                Z_t = swap_pred_Z[t]
+                Z_t = swapped_pred_Z_list[t]
                 Z_app = Z_t[:, :, :app_dim]
                 pos_depth = Z_t[:, :, app_dim:]
                 S_raw = self.model.f_z.inverse(Z_app)

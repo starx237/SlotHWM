@@ -532,7 +532,12 @@ class HamiltonianNet(nn.Module):
             activation_fn=nn.SiLU,
         )
         nn.init.zeros_(self.tril_mlp.net[-1].weight)
-        nn.init.zeros_(self.tril_mlp.net[-1].bias)
+        tril_bias = torch.zeros(tril_size)
+        indices = torch.tril_indices(embed_dim, embed_dim)
+        diag_mask = indices[0] == indices[1]
+        tril_bias[diag_mask] = 1.0
+        with torch.no_grad():
+            self.tril_mlp.net[-1].bias.copy_(tril_bias)
         self.eps = 1e-4
 
         self.potential_net = MLP(

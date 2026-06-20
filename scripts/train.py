@@ -90,14 +90,14 @@ def main():
         (p for p in model.parameters() if p.requires_grad), cfg)
     trainer = Trainer(model, optimizer, scheduler, cfg, wandb_logger=wandb_logger)
 
-    # Visualization callback (pretrain only: slot decomposition + swap test)
     viz_every = getattr(cfg, 'viz_every_steps', 0)
-    if viz_every > 0 and getattr(cfg, 'pretrain', False):
+    if viz_every > 0:
         vis_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vis_slots.py')
         swap_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vis_swap.py')
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         config_path = os.path.abspath(args.config)
         workdir = os.path.abspath(args.workdir)
+        is_pretrain = getattr(cfg, 'pretrain', True)
 
         def vis_callback(step):
             if step > 0 and step % viz_every == 0:
