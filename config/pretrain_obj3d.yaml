@@ -62,7 +62,7 @@ batch_size: 64
 learning_rate: 0.0004
 weight_decay: 0.0
 max_grad_norm: 0.05
-burnin_frames: 16
+burnin_frames: 6
 rollout_frames: 0
 slide_stride: 4
 warmup_steps: 10000

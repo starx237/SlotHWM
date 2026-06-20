@@ -132,16 +132,34 @@ for i, batch in enumerate(loader):
         slot_dim_z = model.static_dim + model.dynamic_dim
 
         slots = None
+        gru2_hidden = None
+        prev_appearance = None
         burnin_Z_list = []
         for t in range(burnin):
+            if t > 0 and slots is not None:
+                new_appearance, gru2_hidden = model._gru2_step(prev_appearance, gru2_hidden)
+                slots = torch.cat([
+                    new_appearance,
+                    slots[:, :, -3:-1].contiguous(),
+                    slots[:, :, -1:].contiguous(),
+                ], dim=-1)
             with torch.no_grad():
                 slots, attn = model._sa(feat[:, t], slots, t)
+            prev_appearance = slots[:, :, :-3].detach()
+            if t == 0:
+                BN = prev_appearance.shape[0] * prev_appearance.shape[1]
+                gru2_hidden = torch.zeros(BN, model.gru2_hidden_dim, device=device)
+                gru2_hidden = model.gru2(
+                    prev_appearance.reshape(-1, model.appearance_dim),
+                    gru2_hidden,
+                )
             Z_core = model.f_z(slots[:, :, :model.appearance_dim])
             Z_full = torch.cat([Z_core, slots[:, :, -3:]], dim=-1)
             burnin_Z_list.append(Z_full)
 
         freeze_C = getattr(cfg, 'freeze_C', False)
         global_C = model.predictor.compute_C(torch.stack(burnin_Z_list, dim=1)) if freeze_C else None
+        depth_anchor = burnin_Z_list[-1][:, :, -1:].detach()
 
         # Original rollout
         Z_buffer_orig = list(burnin_Z_list)
@@ -150,7 +168,7 @@ for i, batch in enumerate(loader):
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_Z[:, :, :model.static_dim]
             Z_buf_t = torch.stack(Z_buffer_orig[:burnin + t], dim=1)
-            next_Z = model.predictor(cur_Z, Z_buf_t, C=C_use)
+            next_Z = model.predictor(cur_Z, Z_buf_t, C=C_use, depth_anchor=depth_anchor)
             pred_Z_list.append(next_Z)
             Z_buffer_orig.append(next_Z)
             cur_Z = next_Z
@@ -195,6 +213,7 @@ for i, batch in enumerate(loader):
 
         swapped_global_C = model.predictor.compute_C(
             torch.stack(swapped_burnin_Z_list, dim=1)) if freeze_C else None
+        swapped_depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
 
         # Rollout from swapped burnin
         Z_buffer_swap = list(swapped_burnin_Z_list)
@@ -203,7 +222,7 @@ for i, batch in enumerate(loader):
         for t in range(rollout):
             C_use = swapped_global_C if freeze_C else cur_Z_swap[:, :, :model.static_dim]
             Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
-            next_Z = model.predictor(cur_Z_swap, Z_buf_t, C=C_use)
+            next_Z = model.predictor(cur_Z_swap, Z_buf_t, C=C_use, depth_anchor=swapped_depth_anchor)
             swapped_pred_Z_list.append(next_Z)
             Z_buffer_swap.append(next_Z)
             cur_Z_swap = next_Z

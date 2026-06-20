@@ -139,7 +139,7 @@ class SlotPredictor(nn.Module):
         if depth_anchor is not None:
             upper = torch.max(depth_anchor * 2,
                               torch.tensor(self.depth_max, device=depth_anchor.device))
-            depth = depth_anchor + torch.tanh(self.depth_gate(q_next)) * (upper - depth_anchor)
+            depth = depth_anchor + torch.tanh(self.depth_gate(next_dyn)) * (upper - depth_anchor)
             depth = torch.clamp(depth, min=0)
             next_dyn = torch.cat([
                 next_dyn[:, :, :-1],
