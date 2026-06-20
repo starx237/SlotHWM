@@ -486,8 +486,11 @@ class Trainer:
         '''只保留当前步数往前最近的 keep_last 个存档，删除落后/未来的存档。'''
         if self.keep_last <= 0:
             return
+        def _step_num(p):
+            n = os.path.basename(p).replace('step_', '').replace('.pt', '')
+            return int(n) if n.isdigit() else -1
         ckpts = sorted(glob.glob(os.path.join(self.ckpt_dir, "step_*.pt")),
-                       key=lambda p: int(os.path.basename(p).replace('step_', '').replace('.pt', '')))
+                       key=_step_num)
         keep_threshold = current_step - self.keep_last * self.save_every
         for fp in ckpts:
             step = int(os.path.basename(fp).replace('step_', '').replace('.pt', ''))

@@ -93,8 +93,8 @@ keep_last_checkpoints: 20
 workdir: "./experiments/obj3d"
 
 # 断点续训
-resume: false
-resume_step: 0
+resume: true
+resume_step: 1000
 
 # 冻结 ISA 模块（finetune 阶段启用）
 freeze_slot: true
