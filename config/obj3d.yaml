@@ -33,8 +33,8 @@ softmax_temperature: 1.0
 append_statistics: false
 
 # Z 空间拆分（static_dim + dynamic_dim = 67）
-static_dim: 60
-dynamic_dim: 7
+static_dim: 64
+dynamic_dim: 3
 
 # 解码器（ISA 单流 broadcast + pos_emb）
 decoder_hidden: 64
@@ -74,7 +74,7 @@ lambda_energy: 0.10
 lambda_static: 0.00
 lambda_rev: 0.005
 lambda_recon_burnin: 0.0
-lambda_recon_rollout: 0.01
+lambda_recon_rollout: 0.0
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
@@ -83,7 +83,9 @@ rev_grad_max_norm: 0.1
 
 freeze_C: true
 zero_init_dyn: true
-depth_max: 0.4
+depth_max: 0.30
+delta_depth_max: 0.05
+freeze_appearance: true
 
 # 日志与存档
 log_every: 2

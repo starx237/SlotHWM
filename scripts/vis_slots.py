@@ -69,13 +69,17 @@ for i, batch in enumerate(loader):
         display_frames = frames[0, :burnin]
         display_recons = recons
         display_slots = slots_seq
+        n_cols = min(n_display, 10)
     else:
         pred_recons = out['outputs']['video_pred'][0]   # (R, 3, H, W)
         pred_slots_S = out['slots']['predicted'][0]      # (R, N, 67)
-        n_display = rollout
-        display_frames = frames[0, burnin:burnin + rollout]
-        display_recons = pred_recons
-        display_slots = pred_slots_S
+        burnin_slots_S = out['slots']['corrected'][0]    # (B, N, 67)
+        burnin_recons = out['outputs']['video_burnin'][0] # (B, 3, H, W)
+        n_display = burnin + rollout
+        display_frames = torch.cat([frames[0, :burnin], frames[0, burnin:burnin + rollout]], dim=0)
+        display_recons = torch.cat([burnin_recons, pred_recons], dim=0)
+        display_slots = torch.cat([burnin_slots_S, pred_slots_S], dim=0)
+        n_cols = min(n_display, 16)
 
     all_alphas = []
     all_rgbs = []
@@ -90,7 +94,6 @@ for i, batch in enumerate(loader):
     S = 64
     PAD = 2
     LABEL_W = 60
-    n_cols = min(n_display, 10)
     n_slots = model.slot_attention.num_slots
 
     canvas = Image.new('RGB', (LABEL_W + n_cols * (S + PAD), (2 + n_slots) * (S + PAD)), (255, 255, 255))
@@ -115,8 +118,8 @@ for i, batch in enumerate(loader):
         y = r * (S + PAD)
         canvas.paste(Image.fromarray((display * 255).astype('uint8')), (x, y))
 
-    row0_label = 'Video (burnin)' if is_pretrain else 'Video (rollout)'
-    row1_label = 'Recon (burnin)' if is_pretrain else 'Pred (rollout)'
+    row0_label = 'Video (burnin)' if is_pretrain else 'Video (burnin+rollout)'
+    row1_label = 'Recon (burnin)' if is_pretrain else 'Recon+Pred (burnin+rollout)'
 
     draw.text((2, 2), row0_label, fill=(0, 0, 0), font=font)
     for t in range(n_cols):
@@ -125,6 +128,12 @@ for i, batch in enumerate(loader):
     draw.text((2, (S + PAD) + 2), row1_label, fill=(0, 0, 0), font=font)
     for t in range(n_cols):
         put_rgb(display_recons[t], 1, t)
+
+    if not is_pretrain and burnin < n_cols:
+        for row in range(2 + n_slots):
+            x = LABEL_W + burnin * (S + PAD) - 1
+            y0 = row * (S + PAD)
+            draw.line([(x, y0), (x, y0 + S)], fill=(255, 0, 0), width=2)
 
     for j in range(n_slots):
         y = (2 + j) * (S + PAD) + 2

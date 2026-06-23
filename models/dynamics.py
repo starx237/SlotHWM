@@ -298,7 +298,6 @@ class SlotDynamicsModel(nn.Module):
 
         freeze_C = getattr(self.config, 'freeze_C', False)
         global_C = self.predictor.compute_C(burnin_Z) if freeze_C else None
-        depth_anchor = Z_full[:, :, -1:].detach()
         pred_Z_list = []
         energy_pairs = []
         cur_Z = Z_full
@@ -309,8 +308,7 @@ class SlotDynamicsModel(nn.Module):
             C_use = global_C if freeze_C else cur_Z[:, :, :self.static_dim]
             Z_buf_t = torch.stack(Z_buffer[:burnin + t], dim=1)
             out = self.predictor(cur_Z, Z_buf_t, C=C_use,
-                                 return_energy=True, return_qp=True,
-                                 depth_anchor=depth_anchor)
+                                 return_energy=True, return_qp=True)
             next_Z, ep, (fresh_q, fresh_p), (q_next, p_next) = out
             pred_Z_list.append(next_Z)
             if ep is not None:
@@ -349,6 +347,25 @@ class SlotDynamicsModel(nn.Module):
                 target_S_list.append(s)
             target_S = torch.stack(target_S_list, dim=1)
 
+        depth_max = getattr(self.config, 'depth_max', 0.30)
+        delta_depth_max = getattr(self.config, 'delta_depth_max', 0.05)
+        with torch.no_grad():
+            target_depth = target_S[:, :, :, -1]
+            prev_depth = burnin_S[:, -1, :, -1]
+            depth_mask = torch.ones(B, rollout, target_S.shape[2],
+                                    dtype=torch.bool, device=frames.device)
+            masked_out = torch.zeros(B, target_S.shape[2],
+                                     dtype=torch.bool, device=frames.device)
+            for t in range(rollout):
+                cur_d = target_depth[:, t, :]
+                if t == 0:
+                    delta_d = cur_d - prev_depth
+                else:
+                    delta_d = cur_d - target_depth[:, t - 1, :]
+                trigger = (cur_d >= depth_max) | (delta_d >= delta_depth_max)
+                masked_out = masked_out | trigger
+                depth_mask[:, t, :] = ~masked_out
+
         dec_burnin = torch.stack([self.decoder(burnin_S[:, t]) for t in range(burnin)], dim=1)
         pred_S_list = []
         for t in range(rollout):
@@ -377,6 +394,7 @@ class SlotDynamicsModel(nn.Module):
                 "predicted": pred_S,
                 "target": target_S,
             },
+            "depth_mask": depth_mask,
             "rev_pred": rev_pred,
             "S_c": Z_c,
             "energy_pairs": energy_pairs if energy_pairs else None,
@@ -410,14 +428,12 @@ class SlotDynamicsModel(nn.Module):
         freeze_C = getattr(self.config, 'freeze_C', False)
         global_C = self.predictor.compute_C(
             slot_buffer[:, :burnin, :, :self.static_dim]) if freeze_C else None
-        depth_anchor = slot_buffer[:, burnin - 1, :, -1:].detach()
         pred_S_list = []
         energy_pairs = []
         cur_S = slot_buffer[:, burnin - 1]
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_S[:, :, :self.static_dim]
-            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_use, return_energy=True,
-                                 depth_anchor=depth_anchor)
+            out = self.predictor(cur_S, slot_buffer[:, :burnin + t], C=C_use, return_energy=True)
             next_S, ep = out if isinstance(out, tuple) else (out, None)
             pred_S_list.append(next_S)
             if ep is not None:

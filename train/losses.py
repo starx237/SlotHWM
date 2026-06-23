@@ -4,16 +4,7 @@ import torch.nn.functional as F
 
 
 def get_loss_ratios(step):
-    """返回各 loss 系数在给定步数的缩放比例（默认 1.0 = 使用配置文件原始值）。
-    实际系数 = config_value * ratio(step)。
-    每个比例的公式可单独自定义。"""
     ratios = {
-        # "burnin": 1.0,
-        # "rollout": 1.0 - 0.5 * max(0.0, min(1.0, (step - 5000) / (50000 - 5000))),
-        # "slots": min(1.0, step / 40000),
-        # "energy": min(1.0, step / 20000),
-        # "rev": 1.0,
-        # "static": min(1.0, step / 20000),
         "burnin": 1.0,
         "rollout": 1.0,
         "slots": 1.0,
@@ -25,56 +16,82 @@ def get_loss_ratios(step):
 
 
 def get_rollout_frames(step, max_rollout):
-    """返回当前步数应使用的 rollout 帧数（最大值不超过 max_rollout）。
-    用于逐步增加预测长度等调度策略。"""
-    # return 2 + 2 * (step >= 10000) + 2 * (step >= 30000)
     return max_rollout
 
 
 class SlotPiLoss(nn.Module):
-    '''SlotPi 损失函数。
-    包含 slot 预测损失、静态特征方差正则 L_LC、GRL 反向预测损失 L_rev。
-    所有 aux 输出值均为已乘系数的加权值，直接反映对 total 的贡献。'''
     def __init__(self, config):
         super().__init__()
         self.config = config
-        self.lambda_slots = getattr(config, "lambda_slots", 1.0)   # slot 预测损失权重
+        self.lambda_slots = getattr(config, "lambda_slots", 1.0)
         self.lambda_images = getattr(config, "lambda_images", 0.0)
         self.lambda_energy = getattr(config, "lambda_energy", 0.01)
-        self.C_LC = getattr(config, "lambda_static", 0.001)        # 静态特征方差正则权重（idea.md §3）
-        self.lambda_rev = getattr(config, "lambda_rev", 0.1)       # GRL 反向预测损失权重（idea.md §4）
+        self.C_LC = getattr(config, "lambda_static", 0.001)
+        self.lambda_rev = getattr(config, "lambda_rev", 0.1)
+        self.freeze_appearance = getattr(config, "freeze_appearance", False)
+        self.appearance_dim = getattr(config, "appearance_dim", 64)
 
     def compute_rev_loss(self, rev_pred, S_c, T, N):
-        '''L_rev = 1/(N·T) Σ||MLP_rev(GRL(S^d)) - StopGradient(S^c)||²。
-           F.mse_loss 已对所有维度取平均，无需额外缩放。'''
         return F.mse_loss(rev_pred, S_c.detach())
 
     def forward(self, pred_slots, target_slots, pred_images=None,
                 target_images=None, energy=None, slots_full_seq=None,
-                rev_pred=None, C=None, S_c=None, ratios=None):
+                rev_pred=None, C=None, S_c=None, ratios=None,
+                depth_mask=None):
         r = ratios or {}
-        # 梯度版本系数（用于 backward）
         ls_grad = r.get("slots", 1.0) * self.lambda_slots
         le_grad = r.get("energy", 1.0) * self.lambda_energy
         lc_grad = r.get("static", 1.0) * self.C_LC
         lr_grad = r.get("rev", 1.0) * self.lambda_rev
 
         # ---- slot 预测损失 ----
-        slot_val = F.mse_loss(pred_slots, target_slots)
+        if depth_mask is not None:
+            mask = depth_mask.unsqueeze(-1).float()
+            if self.freeze_appearance:
+                app_dim = self.appearance_dim
+                pred_dyn = pred_slots[:, :, :, app_dim:]
+                target_dyn = target_slots[:, :, :, app_dim:]
+                per_elem = (pred_dyn - target_dyn) ** 2
+                masked = per_elem * mask
+                slot_val_dyn = masked.sum() / (mask.sum() * pred_dyn.shape[-1] + 1e-8)
+                pred_app = pred_slots[:, :, :, :app_dim].detach()
+                target_app = target_slots[:, :, :, :app_dim]
+                slot_val_app = F.mse_loss(pred_app, target_app)
+                slot_val = slot_val_dyn + slot_val_app
+                slot_val_dyn_raw = slot_val_dyn
+                slot_val_app_raw = slot_val_app
+            else:
+                per_elem = (pred_slots - target_slots) ** 2
+                masked = per_elem * mask
+                slot_val = masked.sum() / (mask.sum() * pred_slots.shape[-1] + 1e-8)
+                slot_val_dyn_raw = slot_val
+                slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
+        else:
+            if self.freeze_appearance:
+                app_dim = self.appearance_dim
+                pred_dyn = pred_slots[:, :, :, app_dim:]
+                target_dyn = target_slots[:, :, :, app_dim:]
+                slot_val_dyn = F.mse_loss(pred_dyn, target_dyn)
+                pred_app = pred_slots[:, :, :, :app_dim].detach()
+                target_app = target_slots[:, :, :, :app_dim]
+                slot_val_app = F.mse_loss(pred_app, target_app)
+                slot_val = slot_val_dyn + slot_val_app
+                slot_val_dyn_raw = slot_val_dyn
+                slot_val_app_raw = slot_val_app
+            else:
+                slot_val = F.mse_loss(pred_slots, target_slots)
+                slot_val_dyn_raw = slot_val
+                slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
 
-        # ---- 图像重建损失（默认关闭） ----
         image_val = torch.tensor(0.0, device=pred_slots.device)
         if pred_images is not None and target_images is not None:
             image_val = F.mse_loss(pred_images, target_images)
 
-        # ---- 能量守恒损失（energy 为 [(E_before, E_after), ...]，每 rollout 步一对）----
         energy_val = torch.tensor(0.0, device=pred_slots.device)
         if energy is not None and len(energy) >= 1:
             losses = [F.mse_loss(e[0], e[1]) for e in energy]
             energy_val = sum(losses) / len(losses)
 
-        # ---- 静态特征方差正则 L_LC（梯度不传播，仅监控） ----
-        # 使用 Z^c（仿射耦合后的静态部分）计算 slot 间方差；S_c 在 finetune 中实际为 Z^c
         static_raw_local = torch.tensor(0.0, device=pred_slots.device)
         if S_c is not None and self.C_LC > 0:
             static_features = S_c.detach()
@@ -84,7 +101,6 @@ class SlotPiLoss(nn.Module):
             static_raw_local = self.C_LC * s2_m.sum(dim=-1).mean() / N
         static_grad = r.get("static", 1.0) * static_raw_local
 
-        # ---- GRL 反向预测损失 L_rev（idea.md §4） ----
         rev_raw = torch.tensor(0.0, device=pred_slots.device)
         if rev_pred is not None and S_c is not None and self.lambda_rev > 0:
             T = rev_pred.shape[1]
@@ -92,17 +108,19 @@ class SlotPiLoss(nn.Module):
             rev_raw = self.lambda_rev * self.compute_rev_loss(rev_pred, S_c, T, N)
         rev_grad = r.get("rev", 1.0) * rev_raw
 
-        # ---- 梯度更新用的加权和 ----
         total_grad = (ls_grad * slot_val +
                       self.lambda_images * image_val +
                       le_grad * energy_val +
                       static_grad + rev_grad)
 
-        # ---- 监控用原始系数值 ----
         aux = {
             "slot_loss": (self.lambda_slots * slot_val).item(),
+            "slot_loss_dyn": (self.lambda_slots * slot_val_dyn_raw).item(),
+            "slot_loss_app": (self.lambda_slots * slot_val_app_raw).item(),
             "energy_loss": (self.lambda_energy * energy_val).item(),
             "static_loss": static_raw_local.item(),
             "rev_loss": rev_raw.item(),
         }
+        if depth_mask is not None:
+            aux["depth_mask_ratio"] = depth_mask.float().mean().item()
         return total_grad, aux

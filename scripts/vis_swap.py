@@ -78,9 +78,13 @@ for i, batch in enumerate(loader):
         slots_seq = out['slots']['corrected']       # (1, T, N, 67)
         recon_seq = out['outputs']['video_burnin']   # (1, T, 3, H, W)
 
-        slots = slots_seq[:, 0]
+        slots = slots_seq[:, -1]
         _, alpha, rgb = model.decoder(slots, return_rgb=True)
         fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
+
+        if len(fg_idxs) < 2:
+            print(f'Only {len(fg_idxs)} foreground slots, skipping swap')
+            continue
 
         if slot_a_arg != 'auto':
             swap_a = int(slot_a_arg)
@@ -126,7 +130,8 @@ for i, batch in enumerate(loader):
 
     else:
         # === FINETUNE MODE ===
-        feat = model._encode_features(frames)
+        with torch.no_grad():
+            feat = model._encode_features(frames)
         B = 1
         buf_sz = getattr(cfg, 'buffer_len', total_frames)
         slot_dim_z = model.static_dim + model.dynamic_dim
@@ -159,7 +164,6 @@ for i, batch in enumerate(loader):
 
         freeze_C = getattr(cfg, 'freeze_C', False)
         global_C = model.predictor.compute_C(torch.stack(burnin_Z_list, dim=1)) if freeze_C else None
-        depth_anchor = burnin_Z_list[-1][:, :, -1:].detach()
 
         # Original rollout
         Z_buffer_orig = list(burnin_Z_list)
@@ -168,7 +172,7 @@ for i, batch in enumerate(loader):
         for t in range(rollout):
             C_use = global_C if freeze_C else cur_Z[:, :, :model.static_dim]
             Z_buf_t = torch.stack(Z_buffer_orig[:burnin + t], dim=1)
-            next_Z = model.predictor(cur_Z, Z_buf_t, C=C_use, depth_anchor=depth_anchor)
+            next_Z = model.predictor(cur_Z, Z_buf_t, C=C_use)
             pred_Z_list.append(next_Z)
             Z_buffer_orig.append(next_Z)
             cur_Z = next_Z
@@ -187,6 +191,10 @@ for i, batch in enumerate(loader):
         # Detect foreground from last burnin frame
         _, alpha, rgb = model.decoder(slots, return_rgb=True)
         fg_idxs, bg_idxs, scores = detect_foreground_slots(alpha, rgb)
+
+        if len(fg_idxs) < 2:
+            print(f'Only {len(fg_idxs)} foreground slots, skipping swap')
+            continue
 
         if slot_a_arg != 'auto':
             swap_a = int(slot_a_arg)
@@ -213,7 +221,6 @@ for i, batch in enumerate(loader):
 
         swapped_global_C = model.predictor.compute_C(
             torch.stack(swapped_burnin_Z_list, dim=1)) if freeze_C else None
-        swapped_depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
 
         # Rollout from swapped burnin
         Z_buffer_swap = list(swapped_burnin_Z_list)
@@ -222,7 +229,7 @@ for i, batch in enumerate(loader):
         for t in range(rollout):
             C_use = swapped_global_C if freeze_C else cur_Z_swap[:, :, :model.static_dim]
             Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
-            next_Z = model.predictor(cur_Z_swap, Z_buf_t, C=C_use, depth_anchor=swapped_depth_anchor)
+            next_Z = model.predictor(cur_Z_swap, Z_buf_t, C=C_use)
             swapped_pred_Z_list.append(next_Z)
             Z_buffer_swap.append(next_Z)
             cur_Z_swap = next_Z

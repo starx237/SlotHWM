@@ -221,7 +221,16 @@ class Trainer:
         r = min(current_rollout, self.rollout)
         recon_rollout_val = self.lambda_recon_rollout * nn.functional.mse_loss(
             video_pred[:, :r], target_rollout[:, :r])
-        recon_rollout_grad = recon_rollout_val * ratios["rollout"]
+
+        freeze_appearance = getattr(self.config, 'freeze_appearance', False)
+        if freeze_appearance:
+            recon_rollout_grad = recon_rollout_val.detach() * ratios["rollout"]
+        else:
+            recon_rollout_grad = recon_rollout_val * ratios["rollout"]
+
+        depth_mask = out.get("depth_mask")
+        if depth_mask is not None:
+            depth_mask = depth_mask[:, :r, :]
 
         all_slots = torch.cat([out["slots"]["corrected"], out["slots"]["predicted"]], dim=1)
         slot_pred_grad, aux = self.loss_fn(
@@ -230,7 +239,8 @@ class Trainer:
             rev_pred=out.get("rev_pred"),
             S_c=out.get("S_c"),
             energy=out.get("energy_pairs"),
-            ratios=ratios)
+            ratios=ratios,
+            depth_mask=depth_mask)
 
         with torch.no_grad():
             aux['slot_var_across'] = all_slots.var(dim=2, unbiased=False).mean().item()
@@ -440,6 +450,8 @@ class Trainer:
             _, alpha, rgb = self.model.decoder(last_burnin_S, return_rgb=True)
 
             fg_idxs, bg_idxs, scores = self._detect_foreground_slots(alpha, rgb)
+            if len(fg_idxs) < 2:
+                return [torch.zeros(3, target_size, target_size, device=self.device)] * rollout
             swap_a, swap_b = fg_idxs[0], fg_idxs[1]
 
             app_dim = self.model.appearance_dim
@@ -464,8 +476,6 @@ class Trainer:
             else:
                 swapped_global_C = None
 
-            swapped_depth_anchor = swapped_burnin_Z_list[-1][:, :, -1:].detach()
-
             # Rollout from swapped burnin (same logic as vis_swap.py)
             Z_buffer_swap = list(swapped_burnin_Z_list)
             swapped_pred_Z_list = []
@@ -473,8 +483,7 @@ class Trainer:
             for t in range(rollout):
                 C_use = swapped_global_C if freeze_C else cur_Z[:, :, :self.model.static_dim]
                 Z_buf_t = torch.stack(Z_buffer_swap[:burnin + t], dim=1)
-                next_Z = self.model.predictor(cur_Z, Z_buf_t, C=C_use,
-                                              depth_anchor=swapped_depth_anchor)
+                next_Z = self.model.predictor(cur_Z, Z_buf_t, C=C_use)
                 swapped_pred_Z_list.append(next_Z)
                 Z_buffer_swap.append(next_Z)
                 cur_Z = next_Z
