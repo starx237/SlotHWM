@@ -171,7 +171,7 @@ class SpaceAttentionBlock(nn.Module):
         self.layernorm_query = nn.LayerNorm(embed_dim, eps=1e-6)
         self.layernorm_mlp = nn.LayerNorm(embed_dim, eps=1e-6)
 
-        if self.num_heads > 1:
+        if self.num_heads > 1 or self.qkv_size != self.embed_dim:
             self.dense_o = nn.Linear(qkv_size, embed_dim)
 
         if self.dropout_rate > 0:
@@ -179,7 +179,7 @@ class SpaceAttentionBlock(nn.Module):
             self.ff_dropout = nn.Dropout(self.dropout_rate)
 
         if zero_init:
-            if self.num_heads > 1:
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
                 nn.init.zeros_(self.dense_o.weight)
                 nn.init.zeros_(self.dense_o.bias)
             nn.init.zeros_(self.mlp.net[-1].weight)
@@ -201,7 +201,7 @@ class SpaceAttentionBlock(nn.Module):
             k = self.dense_k(x).view(B, N, self.num_heads, head_dim)
             v = self.dense_v(x).view(B, N, self.num_heads, head_dim)
             xs, _ = self.attn(query=q, key=k, value=v)
-            if self.num_heads > 1:
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
                 xs = self.dense_o(xs.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
             else:
                 xs = xs.squeeze(-2)
@@ -222,7 +222,7 @@ class SpaceAttentionBlock(nn.Module):
             k = self.dense_k(x).view(B, N, self.num_heads, head_dim)
             v = self.dense_v(x).view(B, N, self.num_heads, head_dim)
             xs, _ = self.attn(query=q, key=k, value=v)
-            if self.num_heads > 1:
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
                 xs = self.dense_o(xs.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
             else:
                 xs = xs.squeeze(-2)
@@ -243,6 +243,7 @@ class TimeAttentionBlock(nn.Module):
     '''
     时间注意力块，用于跨时间步对 Slot 的时序建模。
     输入为当前帧和缓存的历史帧，输出作为动量（p）的更新，也可以用于计算 C（内容变量）。
+    当 no_bias=True 时，V 投影层和 LayerNorm 不使用偏置，保证零输入产生零输出。
     '''
     def __init__(self,
                  embed_dim: int,
@@ -252,7 +253,8 @@ class TimeAttentionBlock(nn.Module):
                  pre_norm: bool = False,
                  weight_init=None,
                  dropout_rate: float = 0.1,
-                 zero_init: bool = False   # True 时初始化输出为零（用于 C）
+                 zero_init: bool = False,
+                 no_bias: bool = False
                  ):
         super().__init__()
         self.embed_dim = embed_dim
@@ -270,28 +272,30 @@ class TimeAttentionBlock(nn.Module):
         # QKV 投影层
         self.dense_tq = nn.Linear(embed_dim, qkv_size)
         self.dense_tk = nn.Linear(embed_dim, qkv_size)
-        self.dense_tv = nn.Linear(embed_dim, qkv_size)
+        self.dense_tv = nn.Linear(embed_dim, qkv_size, bias=not no_bias)
         # 输出 MLP
         self.mlp = MLP(
             input_size=embed_dim, hidden_size=mlp_size,
             output_size=embed_dim, weight_init=weight_init)
 
-        self.layernorm_tquery = nn.LayerNorm(embed_dim, eps=1e-6)
-        self.layernorm_mlp = nn.LayerNorm(embed_dim, eps=1e-6)
+        self.layernorm_tquery = nn.LayerNorm(embed_dim, eps=1e-6, bias=not no_bias)
+        self.layernorm_mlp = nn.LayerNorm(embed_dim, eps=1e-6, bias=not no_bias)
 
-        if self.num_heads > 1:
-            self.dense_to = nn.Linear(qkv_size, embed_dim)
+        if self.num_heads > 1 or self.qkv_size != self.embed_dim:
+            self.dense_to = nn.Linear(qkv_size, embed_dim, bias=not no_bias)
 
         if self.dropout_rate > 0:
             self.att_drop = nn.Dropout(self.dropout_rate)
             self.ff_dropout = nn.Dropout(self.dropout_rate)
 
         if zero_init:
-            if self.num_heads > 1:
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
                 nn.init.zeros_(self.dense_to.weight)
-                nn.init.zeros_(self.dense_to.bias)
+                if self.dense_to.bias is not None:
+                    nn.init.zeros_(self.dense_to.bias)
             nn.init.zeros_(self.mlp.net[-1].weight)
-            nn.init.zeros_(self.mlp.net[-1].bias)
+            if self.mlp.net[-1].bias is not None:
+                nn.init.zeros_(self.mlp.net[-1].bias)
 
     def forward(self, inputs: Array, buffer: Array,
                 padding_mask: Optional[Array] = None,
@@ -350,8 +354,8 @@ class TimeAttentionBlock(nn.Module):
             kt = self.dense_tk(xt_buffer_k).view(xt_buffer_k.shape[0], xt_buffer_k.shape[1], self.num_heads, self.head_dim)
             vt = self.dense_tv(xt_buffer_v).view(xt_buffer_v.shape[0], xt_buffer_v.shape[1], self.num_heads, self.head_dim)
             xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*N, 1, h, d
-            if self.num_heads > 1:
-                xt = self.dense_to(xt.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
+                xt = self.dense_to(xt.reshape(B * N, 1, self.qkv_size)).view(B, N, self.embed_dim)
             else:
                 xt = xt.squeeze(-2)
             if self.dropout_rate > 0:
@@ -379,8 +383,8 @@ class TimeAttentionBlock(nn.Module):
             kt = self.dense_tk(xt_buffer_k).view(xt_buffer_k.shape[0], xt_buffer_k.shape[1], self.num_heads, self.head_dim)
             vt = self.dense_tv(xt_buffer_v).view(xt_buffer_v.shape[0], xt_buffer_v.shape[1], self.num_heads, self.head_dim)
             xt, _ = self.attn(query=qt, key=kt, value=vt)  # B*N, 1, h, d
-            if self.num_heads > 1:
-                xt = self.dense_to(xt.reshape(B, N, self.qkv_size)).view(B, N, self.embed_dim)
+            if self.num_heads > 1 or self.qkv_size != self.embed_dim:
+                xt = self.dense_to(xt.reshape(B * N, 1, self.qkv_size)).view(B, N, self.embed_dim)
             else:
                 xt = xt.squeeze(-2)
             if self.dropout_rate > 0:
@@ -449,7 +453,9 @@ class qp_Attentions(nn.Module):
                                   mlp_size=mlp_size,
                                   pre_norm=pre_norm,
                                   weight_init=weight_init,
-                                  dropout_rate=dropout_rate))
+                                  dropout_rate=dropout_rate,
+                                  zero_init=True,
+                                  no_bias=True))
         # 可选择在最终输出的 q 和 p 上再过 MLP
         if self.out_mlp:
             self.q_mlp = MLP(
@@ -460,28 +466,27 @@ class qp_Attentions(nn.Module):
                 activate_output=False,
                 weight_init=weight_init,
             )
-            self.p_mlp = MLP(
-                input_size=embed_dim,
-                hidden_size=2*embed_dim,
-                output_size=embed_dim,
-                num_hidden_layers=self.out_hidden_layers,
-                activate_output=False,
-                weight_init=weight_init,
-            )
+            self.p_mlp = nn.Linear(embed_dim, embed_dim, bias=False)
+            nn.init.xavier_uniform_(self.p_mlp.weight)
 
     def forward(self, inputs: Array, buffer: Array,
                 padding_mask: Optional[Array] = None,
                 train: bool = False) -> Array:
         xs = inputs   # (B, N, D)
-        xt = inputs   # (B, N, D)
         x_buffer = buffer  # (B, T, N, D)
+        # 时间注意力：去中心化 Z^d，使不变输入产生 0 输出
+        xt = inputs   # (B, N, D)
+        if x_buffer.shape[1] > 0:
+            mean_zd = torch.cat([x_buffer, xt.unsqueeze(1)], dim=1).mean(dim=1)  # (B, N, D)
+        else:
+            mean_zd = xt
+        xt_centered = xt - mean_zd
+        x_buffer_centered = x_buffer - mean_zd.unsqueeze(1)
         for i in range(self.num_layers):
-            # 空间注意力求解坐标 q
             xs = self.space_model[i](xs, xs, padding_mask, train)
-            # 时间注意力求解动量 p
-            xt = self.time_model[i](xt, x_buffer, padding_mask, train)
+            xt_centered = self.time_model[i](xt_centered, x_buffer_centered, padding_mask, train)
         q = xs
-        p = xt
+        p = xt_centered
         if self.out_mlp:
             q = self.q_mlp(q)
             p = self.p_mlp(p)
@@ -662,18 +667,8 @@ class Slot_HamiltonianNet(nn.Module):
         )
         # 积分器（方法从配置传入）
         self.integrator = Integrator(method=self.integrator_method)
-        # 第四次修改：P_t = MLP_P(CrossAtt_P(Z_t^d, history), C_t)
-        self.p_mlp_C = MLP(
-            input_size=embed_dim + static_dim,
-            hidden_size=mlp_size // 2,
-            output_size=embed_dim,
-            num_hidden_layers=2,
-            activate_output=False,
-            activation_fn=nn.SiLU,
-        )
-        # 最后一层零初始化，使初始 p_mlp_C ≈ identity
-        nn.init.zeros_(self.p_mlp_C.net[-1].weight)
-        nn.init.zeros_(self.p_mlp_C.net[-1].bias)
+        # P = M^{-1} trans_P，通过 linalg.solve(M, trans_P) 实现
+        # M = LL^T + eps*I，L 来自 HamiltonianNet 的 tril_mlp
 
         # 输入输出归一化层
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
@@ -693,9 +688,14 @@ class Slot_HamiltonianNet(nn.Module):
               顺序：q_next, p_next, [energy_pair], [fresh_qp]
         '''
         q, p = self.qp_net(slot, buffer)
-        # 第四次修改：P_t = MLP_P(CrossAtt_P(Z_t^d, history), C_t)
         if C is not None:
-            p = self.p_mlp_C(torch.cat([p, C], dim=-1))
+            B_p, N_p, D_p = p.shape
+            tril_elems = self.H_net.tril_mlp(C)
+            L = torch.zeros(B_p, N_p, D_p, D_p, device=C.device, dtype=C.dtype)
+            indices = torch.tril_indices(D_p, D_p, device=C.device)
+            L[:, :, indices[0], indices[1]] = tril_elems
+            M_inv = L @ L.transpose(-1, -2) + self.H_net.eps * torch.eye(D_p, device=C.device, dtype=C.dtype)
+            p = torch.linalg.solve(M_inv, p.unsqueeze(-1)).squeeze(-1)
         q.requires_grad_(True)
         p.requires_grad_(True)
 

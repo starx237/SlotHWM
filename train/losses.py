@@ -45,8 +45,16 @@ class SlotPiLoss(nn.Module):
         lr_grad = r.get("rev", 1.0) * self.lambda_rev
 
         # ---- slot 预测损失 ----
+        rollout_decay = getattr(self.config, 'rollout_decay', 1.0)
         if depth_mask is not None:
             mask = depth_mask.unsqueeze(-1).float()
+            T_rollout = mask.shape[1]
+            if rollout_decay < 1.0 and T_rollout > 1:
+                time_weights = torch.tensor(
+                    [rollout_decay ** t for t in range(T_rollout)],
+                    device=mask.device, dtype=mask.dtype
+                ).view(1, T_rollout, 1, 1)
+                mask = mask * time_weights
             if self.freeze_appearance:
                 app_dim = self.appearance_dim
                 pred_dyn = pred_slots[:, :, :, app_dim:]

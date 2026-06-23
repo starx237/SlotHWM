@@ -156,7 +156,11 @@ class SlotDynamicsModel(nn.Module):
                 if mod is not None:
                     for p in mod.parameters():
                         p.requires_grad_(False)
-            print("Frozen: encoder + slot_attention + decoder + gru2 + gru2_proj (ISA)")
+            if getattr(config, 'freeze_appearance', False):
+                for p in self.predictor.C_time_attn.parameters():
+                    p.requires_grad_(False)
+            print("Frozen: encoder + slot_attention + decoder + gru2 + gru2_proj (ISA)" + 
+                  (" + C_time_attn" if getattr(config, 'freeze_appearance', False) else ""))
 
         if getattr(config, 'continue_pretrain', False):
             for p in self.encoder.parameters():
@@ -351,20 +355,24 @@ class SlotDynamicsModel(nn.Module):
         delta_depth_max = getattr(self.config, 'delta_depth_max', 0.05)
         with torch.no_grad():
             target_depth = target_S[:, :, :, -1]
-            prev_depth = burnin_S[:, -1, :, -1]
+            burnin_last_depth = burnin_S[:, -1, :, -1]
+            is_bg_burnin = burnin_last_depth >= depth_max
             depth_mask = torch.ones(B, rollout, target_S.shape[2],
                                     dtype=torch.bool, device=frames.device)
-            masked_out = torch.zeros(B, target_S.shape[2],
-                                     dtype=torch.bool, device=frames.device)
             for t in range(rollout):
                 cur_d = target_depth[:, t, :]
+                is_bg_now = cur_d >= depth_max
+                # 前景→背景: slot 从前景变成空白/背景/离开画面
+                fg_to_bg = ~is_bg_burnin & is_bg_now
+                # 背景→前景: 新物体进入
+                bg_to_fg = is_bg_burnin & ~is_bg_now
+                # 大 delta depth
                 if t == 0:
-                    delta_d = cur_d - prev_depth
+                    delta_d = (cur_d - burnin_last_depth).abs()
                 else:
-                    delta_d = cur_d - target_depth[:, t - 1, :]
-                trigger = (cur_d >= depth_max) | (delta_d >= delta_depth_max)
-                masked_out = masked_out | trigger
-                depth_mask[:, t, :] = ~masked_out
+                    delta_d = (cur_d - target_depth[:, t - 1, :]).abs()
+                big_delta = delta_d >= delta_depth_max
+                depth_mask[:, t, :] = ~(fg_to_bg | bg_to_fg | big_delta)
 
         dec_burnin = torch.stack([self.decoder(burnin_S[:, t]) for t in range(burnin)], dim=1)
         pred_S_list = []

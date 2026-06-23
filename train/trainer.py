@@ -290,6 +290,11 @@ class Trainer:
             if p.grad is not None and (torch.isinf(p.grad).any() or torch.isnan(p.grad).any()):
                 skip_step = True
                 break
+        if not skip_step:
+            total_gn = sum(p.grad.norm().item()**2 for p in self.model.parameters() if p.grad is not None)**0.5
+            skip_gnorm = getattr(self.config, 'skip_grad_norm', 0)
+            if skip_gnorm > 0 and total_gn > skip_gnorm:
+                skip_step = True
         if skip_step:
             self.optimizer.zero_grad()
             return loss.item(), aux, float('inf')
@@ -661,6 +666,8 @@ class Trainer:
                         "recon_b": f"{aux['recon_burnin']:.4f}",
                         "recon_r": f"{aux['recon_rollout']:.4f}",
                         "slot": f"{aux['slot_loss']:.4f}",
+                        "dyn": f"{aux.get('slot_loss_dyn', 0):.4f}",
+                        "mask": f"{aux.get('depth_mask_ratio', 0):.2f}",
                         "static": f"{aux['static_loss']:.6f}",
                         "rev": f"{aux['rev_loss']:.6f}",
                         "energy": f"{aux['energy_loss']:.6f}",
@@ -675,6 +682,10 @@ class Trainer:
                     self.writer.add_scalar("loss/recon_burnin", aux['recon_burnin']*10, global_step)
                     self.writer.add_scalar("loss/recon_rollout", aux['recon_rollout']*10, global_step)
                     self.writer.add_scalar("loss/slot", aux['slot_loss']*10, global_step)
+                    self.writer.add_scalar("loss/slot_dyn", aux.get('slot_loss_dyn', 0)*10, global_step)
+                    self.writer.add_scalar("loss/slot_app", aux.get('slot_loss_app', 0)*10, global_step)
+                    if 'depth_mask_ratio' in aux:
+                        self.writer.add_scalar("train/depth_mask_ratio", aux['depth_mask_ratio'], global_step)
                     self.writer.add_scalar("loss/static", aux['static_loss']*10, global_step)
                     self.writer.add_scalar("loss/rev", aux['rev_loss']*10, global_step)
                     self.writer.add_scalar("loss/energy", aux['energy_loss']*10, global_step)
