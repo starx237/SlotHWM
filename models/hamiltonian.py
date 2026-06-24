@@ -497,11 +497,10 @@ class HamiltonianNet(nn.Module):
     '''
     哈密顿量网络，输入 q, p, C，输出标量能量 H。
     将能量分解为三项：
-      H = T(P, C) + sum_i MLP_V(Q_i, C_i) + sum(Transformer_I(Concat(Q_t|C_t)))
-    动能采用质量矩阵形式：
-      M^{-1}(C) = L(C)L(C)^T + eps*I,  L(C) = MLP_L(C) 输出下三角矩阵
-      T = 0.5 * sum_i P_i^T M^{-1}(C_i) P_i
-    当 P=0 时 T=0，保证 zero init。
+      H = T_i + sum_i V(Q_i, C_i) + I(Concat(Q_t|C_t))
+    动能采用做差法：
+      T_i = MLP_K(P_i|Q_i|C_i) - MLP_K(0|Q_i|C_i)
+    当 P=0 时 T_i=0，保证 zero init。
     '''
     def __init__(self,
                  embed_dim: int,
@@ -527,23 +526,15 @@ class HamiltonianNet(nn.Module):
         self.weight_init = weight_init
         self.dropout_rate = dropout_rate
 
-        tril_size = embed_dim * (embed_dim + 1) // 2
-        self.tril_mlp = MLP(
-            input_size=static_dim,
+        # kinetic_mlp: input = (P, Q, C), output = scalar per slot
+        self.kinetic_mlp = MLP(
+            input_size=embed_dim * 2 + static_dim,
             hidden_size=mlp_size // 2,
-            output_size=tril_size,
+            output_size=1,
             num_hidden_layers=2,
             activate_output=False,
-            activation_fn=nn.SiLU,
+            activation_fn=nn.Softplus,
         )
-        nn.init.zeros_(self.tril_mlp.net[-1].weight)
-        tril_bias = torch.zeros(tril_size)
-        indices = torch.tril_indices(embed_dim, embed_dim)
-        diag_mask = indices[0] == indices[1]
-        tril_bias[diag_mask] = 1.0
-        with torch.no_grad():
-            self.tril_mlp.net[-1].bias.copy_(tril_bias)
-        self.eps = 1e-4
 
         self.potential_net = MLP(
             input_size=embed_dim + static_dim,
@@ -576,12 +567,11 @@ class HamiltonianNet(nn.Module):
     def forward(self, q: Array, p: Array, C: Array) -> Array:
         B, N, D = q.shape
 
-        tril_elems = self.tril_mlp(C)
-        L = torch.zeros(B, N, D, D, device=C.device, dtype=C.dtype)
-        indices = torch.tril_indices(D, D, device=C.device)
-        L[:, :, indices[0], indices[1]] = tril_elems
-        M_inv = L @ L.transpose(-1, -2) + self.eps * torch.eye(D, device=C.device, dtype=C.dtype)
-        kinetic = 0.5 * (p.unsqueeze(-2) @ M_inv @ p.unsqueeze(-1)).squeeze(-1).squeeze(-1)
+        # T_i = MLP_K(p_i|q_i|C_i) - MLP_K(0|q_i|C_i)
+        zero_p = torch.zeros_like(p)
+        kp_input = torch.cat([p, q, C], dim=-1)
+        k0_input = torch.cat([zero_p, q, C], dim=-1)
+        kinetic = (self.kinetic_mlp(kp_input) - self.kinetic_mlp(k0_input)).squeeze(-1)
         kinetic = kinetic.sum(dim=1)
 
         potential_input = torch.cat([q, C], dim=-1)
@@ -667,8 +657,15 @@ class Slot_HamiltonianNet(nn.Module):
         )
         # 积分器（方法从配置传入）
         self.integrator = Integrator(method=self.integrator_method)
-        # P = M^{-1} trans_P，通过 linalg.solve(M, trans_P) 实现
-        # M = LL^T + eps*I，L 来自 HamiltonianNet 的 tril_mlp
+
+        # MLP_P: 做差法计算广义动量 P_i = MLP_P(trans_P_i|C_i) - MLP_P(0|C_i)
+        self.p_mlp = MLP(
+            input_size=embed_dim + static_dim,
+            hidden_size=mlp_size // 2,
+            output_size=embed_dim,
+            num_hidden_layers=2,
+            activate_output=False,
+        )
 
         # 输入输出归一化层
         self.mlp_norm = nn.LayerNorm(self.embed_dim, eps=1e-6)
@@ -687,15 +684,14 @@ class Slot_HamiltonianNet(nn.Module):
               return_qp=True    → (…, (fresh_q, fresh_p))
               顺序：q_next, p_next, [energy_pair], [fresh_qp]
         '''
-        q, p = self.qp_net(slot, buffer)
+        trans_q, trans_p = self.qp_net(slot, buffer)
+        q = trans_q
+        # 做差法 p_mlp: P_i = MLP_P(trans_P_i|C_i) - MLP_P(0|C_i)，保证 zero init
         if C is not None:
-            B_p, N_p, D_p = p.shape
-            tril_elems = self.H_net.tril_mlp(C)
-            L = torch.zeros(B_p, N_p, D_p, D_p, device=C.device, dtype=C.dtype)
-            indices = torch.tril_indices(D_p, D_p, device=C.device)
-            L[:, :, indices[0], indices[1]] = tril_elems
-            M_inv = L @ L.transpose(-1, -2) + self.H_net.eps * torch.eye(D_p, device=C.device, dtype=C.dtype)
-            p = torch.linalg.solve(M_inv, p.unsqueeze(-1)).squeeze(-1)
+            zero_p = torch.zeros_like(trans_p)
+            p = self.p_mlp(torch.cat([trans_p, C], dim=-1)) - self.p_mlp(torch.cat([zero_p, C], dim=-1))
+        else:
+            p = trans_p
         q.requires_grad_(True)
         p.requires_grad_(True)
 

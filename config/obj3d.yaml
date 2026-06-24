@@ -61,7 +61,7 @@ num_steps: 200000
 batch_size: 64
 learning_rate: 0.0002
 weight_decay: 0.0
-max_grad_norm: 2.5
+max_grad_norm: 1.0
 skip_grad_norm: 10000
 burnin_frames: 6
 rollout_frames: 10
@@ -69,7 +69,7 @@ slide_stride: 4
 warmup_steps: 5000
 
 # 损失权重
-lambda_slots: 1.0
+lambda_slots: 0.1
 lambda_images: 0.0
 lambda_energy: 0.10
 lambda_static: 0.00

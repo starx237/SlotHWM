@@ -667,10 +667,14 @@ class Trainer:
                         "recon_r": f"{aux['recon_rollout']:.4f}",
                         "slot": f"{aux['slot_loss']:.4f}",
                         "dyn": f"{aux.get('slot_loss_dyn', 0):.4f}",
+                        "pos": f"{aux.get('slot_loss_pos', 0):.6f}",
+                        "depth": f"{aux.get('slot_loss_depth', 0):.6f}",
                         "mask": f"{aux.get('depth_mask_ratio', 0):.2f}",
                         "static": f"{aux['static_loss']:.6f}",
                         "rev": f"{aux['rev_loss']:.6f}",
                         "energy": f"{aux['energy_loss']:.6f}",
+                        "slot_pos": f"{aux.get('slot_loss_pos', 0):.6f}",
+                        "slot_depth": f"{aux.get('slot_loss_depth', 0):.6f}",
                         "pos": f"{aux.get('loss_pos', 0):.6f}",
                         "cos": f"{aux.get('loss_cos', 0):.6f}",
                         "lr": f"{lr:.2e}",
@@ -684,6 +688,8 @@ class Trainer:
                     self.writer.add_scalar("loss/slot", aux['slot_loss']*10, global_step)
                     self.writer.add_scalar("loss/slot_dyn", aux.get('slot_loss_dyn', 0)*10, global_step)
                     self.writer.add_scalar("loss/slot_app", aux.get('slot_loss_app', 0)*10, global_step)
+                    self.writer.add_scalar("loss/slot_pos", aux.get('slot_loss_pos', 0)*10, global_step)
+                    self.writer.add_scalar("loss/slot_depth", aux.get('slot_loss_depth', 0)*10, global_step)
                     if 'depth_mask_ratio' in aux:
                         self.writer.add_scalar("train/depth_mask_ratio", aux['depth_mask_ratio'], global_step)
                     self.writer.add_scalar("loss/static", aux['static_loss']*10, global_step)
@@ -716,8 +722,10 @@ class Trainer:
                         "loss/slot": aux['slot_loss']*10,
                         "loss/static": aux['static_loss']*10,
                         "loss/rev": aux['rev_loss']*10,
-                        "loss/energy": aux['energy_loss']*10,
-                        "train/lr": lr,
+                         "loss/energy": aux['energy_loss']*10,
+                         "loss/slot_pos": aux.get('slot_loss_pos', 0)*10,
+                         "loss/slot_depth": aux.get('slot_loss_depth', 0)*10,
+                         "train/lr": lr,
                         "train/rev_weight": gamma,
                         "train/grad_norm": grad_norm,
                         "train/rollout_actual": aux.get('rollout_actual', self.rollout),

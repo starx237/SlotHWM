@@ -245,11 +245,17 @@ class TimeSpaceTransformerBlock2(nn.Module):
 
         # 输出投影（空间和时间共享）
         self.dense_o = nn.Linear(qkv_size, embed_dim)
+        # zero_init: 时空推理模块建模残差，初始输出应≈0
+        nn.init.zeros_(self.dense_o.weight)
+        nn.init.zeros_(self.dense_o.bias)
 
         # MLP
         self.mlp = MLP(
             input_size=embed_dim, hidden_size=mlp_size,
             output_size=embed_dim, weight_init=None)
+        # zero_init mlp 最后一层
+        nn.init.zeros_(self.mlp.net[-1].weight)
+        nn.init.zeros_(self.mlp.net[-1].bias)
 
         # LayerNorm
         self.layernorm_q = nn.LayerNorm(embed_dim, eps=1e-6)
@@ -288,7 +294,6 @@ class TimeSpaceTransformerBlock2(nn.Module):
             xs = self.dense_o(xs.reshape(B, O, self.qkv_size))
             if self.dropout_rate > 0:
                 xs = self.att_drop(xs)
-            xs = xs + queries
 
             # 时间注意力：当前帧的 Slot 从历史缓存中聚合信息
             xt = self.layernorm_q(queries)
@@ -304,15 +309,16 @@ class TimeSpaceTransformerBlock2(nn.Module):
             xt = self.dense_o(xt).view(B, O, self.embed_dim)
             if self.dropout_rate > 0:
                 xt = self.att_drop(xt)
-            xt = xt + queries
 
-            # 融合空间和时间信息，过 MLP
-            y = xt + xs
+            # 融合空间和时间信息，一次残差连接 + MLP
+            y = xt + xs + queries
             z = self.layernorm_mlp(y)
             z = self.mlp(z)
             if self.dropout_rate > 0:
                 z = self.ff_drop(z)
             z = z + y
+            # 建模残差：输出 = 变化量，不含 queries 本身
+            return z - queries
         else:
             # === 后归一化路径 ===
             # 空间注意力
@@ -324,7 +330,6 @@ class TimeSpaceTransformerBlock2(nn.Module):
             xs = self.dense_o(xs.reshape(B, O, self.qkv_size))
             if self.dropout_rate > 0:
                 xs = self.att_drop(xs)
-            xs = xs + queries
 
             # 时间注意力
             xt = torch.unsqueeze(queries, dim=1)  # B, 1, O, D
@@ -339,17 +344,16 @@ class TimeSpaceTransformerBlock2(nn.Module):
             xt = self.dense_o(xt).view(B, O, self.embed_dim)
             if self.dropout_rate > 0:
                 xt = self.att_drop(xt)
-            xt = xt + queries
 
-            # 融合
-            y = xt + xs
-            # MLP
+            # 融合 + MLP + 一次残差
+            y = xt + xs + queries
             z = self.mlp(y)
             if self.dropout_rate > 0:
                 z = self.ff_drop(z)
             z = z + y
             z = self.layernorm_mlp(z)
-        return z
+            # 建模残差：输出 = 变化量，不含 queries 本身
+            return z - queries
 
 
 class InvertedDotProductAttentionKeyPerQuery(nn.Module):

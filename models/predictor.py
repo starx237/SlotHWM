@@ -92,6 +92,8 @@ class SlotPredictor(nn.Module):
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].weight)
         nn.init.zeros_(self.fusion_mlp.mlp.net[-1].bias)
 
+        self.inv_depth_scale = 1.0 / getattr(config, 'min_depth', 0.05)
+
     def compute_C(self, burnin_slots):
         if not self.freeze_C:
             return burnin_slots[:, -1, :, :self.static_dim]
@@ -112,9 +114,9 @@ class SlotPredictor(nn.Module):
         if C is None:
             C = z[:, :, :D_sta]
 
-        # Z^d = Z 的后 dynamic_dim 维
         z_dyn = z[:, :, D_sta:]
         z_buffer_dyn = z_buffer[:, :, :, D_sta:]
+
         phys_out = self.physics_module(z_dyn, z_buffer_dyn, C=C,
                                         return_energy=return_energy,
                                         return_qp=return_qp)
@@ -129,7 +131,10 @@ class SlotPredictor(nn.Module):
             q_next, p_next = phys_out
             energy_pair, fresh_q, fresh_p = None, None, None
 
-        next_dyn = self.fusion_mlp(q_next)
+        # next_dyn = q_next  # 实验性：跳过 fusion_mlp
+        # next_dyn = self.fusion_mlp(q_next)  # 实验性：使用 fusion_mlp
+        # next_dyn = torch.zeros_like(q_next)  # 暂时注释掉动力学预测模块，测试时空推理模块
+        next_dyn = z_dyn  # 以当前帧 Z^d 为基础，时空模块输出残差
 
         if self.freeze_C:
             z_phys = torch.cat([C, next_dyn], dim=-1)
@@ -137,22 +142,22 @@ class SlotPredictor(nn.Module):
             z_phys = torch.cat([z[:, :, :D_sta], next_dyn], dim=-1)
 
         # 时空推理模块：freeze_C 时只处理 Z^d 部分
-        if self.freeze_C:
-            # st_in = next_dyn
-            # for block in self.spatiotemporal_module:
-            #     st_dyn = block(st_in, z_buffer_dyn)
-            st_out = torch.zeros_like(z_phys)
-            # st_out[:, :, D_sta:] = st_dyn
-        else:
-            st_out = torch.zeros_like(z_phys)
-            for block in self.spatiotemporal_module:
-                st_out = block(st_out, z_buffer)
-
+        # freeze_C=True 时 spatiotemporal_module embed_dim=dyn_total_dim，输入只需 Z^d
+        # freeze_C=False 时 spatiotemporal_module embed_dim=slot_dim，输入需完整 Z
+        # block 输出残差，链式累加
+        st_input = z_dyn if self.freeze_C else z
+        st_buffer = z_buffer_dyn if self.freeze_C else z_buffer
+        h = st_input
+        total_residual = torch.zeros_like(h)
+        for block in self.spatiotemporal_module:
+            total_residual = total_residual + block(h, st_buffer)
+            h = st_input + total_residual
+        # total_residual: (B, N, dyn_total_dim or slot_dim) → 加到 z_phys 的 Z^d 部分
         if self.freeze_C:
             pred_z_next = z_phys.clone()
-            pred_z_next[:, :, D_sta:] = pred_z_next[:, :, D_sta:] + st_out[:, :, D_sta:]
+            pred_z_next[:, :, D_sta:] = pred_z_next[:, :, D_sta:] + total_residual
         else:
-            pred_z_next = z_phys + st_out
+            pred_z_next = z_phys + total_residual
 
         ret = [pred_z_next]
         if return_energy:

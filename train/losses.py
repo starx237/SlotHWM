@@ -68,12 +68,23 @@ class SlotPiLoss(nn.Module):
                 slot_val = slot_val_dyn + slot_val_app
                 slot_val_dyn_raw = slot_val_dyn
                 slot_val_app_raw = slot_val_app
+                # pos/depth 分解 (dyn 后3维: pos_x, pos_y, depth)
+                pos_elem = (pred_dyn[..., :2] - target_dyn[..., :2]) ** 2
+                depth_elem = (pred_dyn[..., 2:3] - target_dyn[..., 2:3]) ** 2
+                pos_val = (pos_elem * mask).sum() / (mask.sum() * 2 + 1e-8)
+                depth_val = (depth_elem * mask).sum() / (mask.sum() * 1 + 1e-8)
             else:
                 per_elem = (pred_slots - target_slots) ** 2
                 masked = per_elem * mask
                 slot_val = masked.sum() / (mask.sum() * pred_slots.shape[-1] + 1e-8)
                 slot_val_dyn_raw = slot_val
                 slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
+                pred_dyn = pred_slots[:, :, :, self.appearance_dim:]
+                target_dyn = target_slots[:, :, :, self.appearance_dim:]
+                pos_elem = (pred_dyn[..., :2] - target_dyn[..., :2]) ** 2
+                depth_elem = (pred_dyn[..., 2:3] - target_dyn[..., 2:3]) ** 2
+                pos_val = (pos_elem * mask).sum() / (mask.sum() * 2 + 1e-8)
+                depth_val = (depth_elem * mask).sum() / (mask.sum() * 1 + 1e-8)
         else:
             if self.freeze_appearance:
                 app_dim = self.appearance_dim
@@ -86,10 +97,16 @@ class SlotPiLoss(nn.Module):
                 slot_val = slot_val_dyn + slot_val_app
                 slot_val_dyn_raw = slot_val_dyn
                 slot_val_app_raw = slot_val_app
+                pos_val = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
+                depth_val = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
             else:
                 slot_val = F.mse_loss(pred_slots, target_slots)
                 slot_val_dyn_raw = slot_val
                 slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
+                pred_dyn = pred_slots[:, :, :, self.appearance_dim:]
+                target_dyn = target_slots[:, :, :, self.appearance_dim:]
+                pos_val = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
+                depth_val = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
 
         image_val = torch.tensor(0.0, device=pred_slots.device)
         if pred_images is not None and target_images is not None:
@@ -125,6 +142,8 @@ class SlotPiLoss(nn.Module):
             "slot_loss": (self.lambda_slots * slot_val).item(),
             "slot_loss_dyn": (self.lambda_slots * slot_val_dyn_raw).item(),
             "slot_loss_app": (self.lambda_slots * slot_val_app_raw).item(),
+            "slot_loss_pos": (self.lambda_slots * pos_val).item(),
+            "slot_loss_depth": (self.lambda_slots * depth_val).item(),
             "energy_loss": (self.lambda_energy * energy_val).item(),
             "static_loss": static_raw_local.item(),
             "rev_loss": rev_raw.item(),
