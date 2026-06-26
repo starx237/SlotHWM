@@ -76,6 +76,8 @@ class Trainer:
         self.max_slot_attention_gnorm = getattr(config, 'max_slot_attention_gnorm', 0.0)
         self.lambda_pos = getattr(config, 'lambda_pos', 0.0)
         self.lambda_cos = getattr(config, 'lambda_cos', 0.0)
+        self.depth_spread_weight = getattr(config, 'depth_spread_weight', 0.0)
+        self.gru2_depth_align_weight = getattr(config, 'gru2_depth_align_weight', 0.0)
         self.continue_pretrain = getattr(config, 'continue_pretrain', False)
         self.detach_cospos = getattr(config, 'detach_cospos', False)
         self.pretrain = getattr(config, 'pretrain', False)
@@ -188,9 +190,10 @@ class Trainer:
                         owned = torch.stack([
                             (dominant == j).sum(dim=[-2, -1]) for j in range(N)
                         ], dim=-1).float()
+                        a_max_pos = a.amax(dim=[-2, -1])
                         noise_floor = 20
                         bg_threshold = 0.6 * H * W
-                        fg_mask = (owned > noise_floor) & (owned < bg_threshold)
+                        fg_mask = (owned > noise_floor) & (owned < bg_threshold) & (a_max_pos > 0.3)
                         if fg_mask.any():
                             loss_pos_t = F.mse_loss(centroid[fg_mask], Sp[fg_mask])
                         else:
@@ -205,6 +208,71 @@ class Trainer:
                     loss_pos = torch.stack(loss_pos_list).mean()
                     extra_loss = extra_loss + self.lambda_pos * loss_pos
                     aux['loss_pos'] = (self.lambda_pos * loss_pos).item()
+
+            # Depth→Spread Predictor loss
+            if self.depth_spread_weight > 0 and (hasattr(self.model, 'depth_spread_a') or (hasattr(self.model, 'depth_spread_predictor') and self.model.depth_spread_predictor is not None)):
+                app_dim = self.model.appearance_dim
+                bnd_threshold = getattr(self.config, 'bnd_threshold', 0.75)
+                ds_loss = torch.tensor(0.0, device=frames.device)
+                n_fg_total = 0
+                for t in range(burnin_T):
+                    slots_t = out["slots"]["corrected"][:, t]
+                    alpha_t = out["alpha"][:, :, t]
+                    if alpha_t.dim() == 5:
+                        alpha_2d = alpha_t.squeeze(2)
+                    else:
+                        alpha_2d = alpha_t
+                    B_a, N_a, H_a, W_a = alpha_2d.shape
+                    gy, gx = torch.meshgrid(
+                        torch.linspace(-1, 1, H_a, device=slots_t.device),
+                        torch.linspace(-1, 1, W_a, device=slots_t.device), indexing='ij')
+                    gx = gx.unsqueeze(0).unsqueeze(0).expand(B_a, N_a, H_a, W_a)
+                    gy = gy.unsqueeze(0).unsqueeze(0).expand(B_a, N_a, H_a, W_a)
+                    a_sum = alpha_2d.sum(dim=[-2, -1], keepdim=True) + 1e-8
+                    a_norm = alpha_2d / a_sum
+                    cx = (a_norm * gx).sum(dim=[-2, -1])
+                    cy = (a_norm * gy).sum(dim=[-2, -1])
+                    true_spread = torch.sqrt((a_norm * ((gx - cx.unsqueeze(-1).unsqueeze(-1)) ** 2 +
+                                                        (gy - cy.unsqueeze(-1).unsqueeze(-1)) ** 2)).sum(dim=[-2, -1])).detach()
+                    true_cov = alpha_2d.sum(dim=[-2, -1]).detach()
+                    depth = slots_t[:, :, app_dim + 2]
+                    if hasattr(self.model, 'depth_spread_a'):
+                        pred_spread = self.model.depth_spread_a * depth + self.model.depth_spread_c
+                        pred_cov = self.model.depth_spread_b * (depth ** 2) + self.model.depth_spread_d
+                    else:
+                        pred = self.model.depth_spread_predictor(depth.unsqueeze(-1))  # (B, N, 2)
+                        pred_spread = pred[:, :, 0]
+                        pred_cov = pred[:, :, 1]
+                    a_max = alpha_2d.amax(dim=[-2, -1])
+                    cov = alpha_2d.sum(dim=[-2, -1])
+                    fg = (cov > 20) & (cov < 1500) & (true_spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+                    px = slots_t[:, :, app_dim]; py = slots_t[:, :, app_dim + 1]
+                    in_bnd = (px.abs() < bnd_threshold) & (py.abs() < bnd_threshold)
+                    mask = fg.detach() & in_bnd.detach()
+                    n_fg_total += mask.sum().item()
+                    if mask.any():
+                        spread_loss = nn.functional.huber_loss(pred_spread[mask], true_spread[mask], delta=0.05)
+                        cov_loss = nn.functional.huber_loss(pred_cov[mask], true_cov[mask] / (H_a * W_a), delta=0.01)
+                        ds_loss = ds_loss + spread_loss + cov_loss
+                extra_loss = extra_loss + self.depth_spread_weight * ds_loss
+                aux['loss_depth_spread'] = (self.depth_spread_weight * ds_loss).item()
+                aux['depth_spread_n_fg'] = n_fg_total
+
+            # GRU2 depth align loss: |gru2_pred_posdepth - isa_posdepth|²
+            if self.gru2_depth_align_weight > 0 and out.get("gru2_pred_posdepth") is not None:
+                gru2_preds = out["gru2_pred_posdepth"]  # list of (B, N, 3), len=burnin_T-1
+                slots_corrected = out["slots"]["corrected"]  # (B, T, N, D)
+                app_dim = self.model.appearance_dim
+                align_loss = torch.tensor(0.0, device=frames.device)
+                n_align = 0
+                for i, pred_pd in enumerate(gru2_preds):
+                    isa_pd = slots_corrected[:, i + 1, :, app_dim:]  # ISA提取后的posdepth
+                    align_loss = align_loss + nn.functional.mse_loss(pred_pd, isa_pd.detach())
+                    n_align += 1
+                if n_align > 0:
+                    align_loss = align_loss / n_align
+                extra_loss = extra_loss + self.gru2_depth_align_weight * align_loss
+                aux['loss_gru2_depth_align'] = (self.gru2_depth_align_weight * align_loss).item()
 
             total_grad = recon_burnin_grad + extra_loss
             aux['recon_burnin'] = recon_burnin_val.item()
@@ -269,7 +337,7 @@ class Trainer:
 
     def _compute_grad_norms(self):
         info = {}
-        for name in ['encoder', 'decoder', 'slot_attention', 'predictor', 'f_z', 'mlp_rev', 'gru2', 'gru2_proj']:
+        for name in ['encoder', 'decoder', 'slot_attention', 'predictor', 'f_z', 'mlp_rev', 'gru2', 'gru2_proj', 'gru2_proj_posdepth', 'depth_spread_predictor']:
             mod = getattr(self.model, name, None)
             if mod is None:
                 continue
@@ -331,6 +399,13 @@ class Trainer:
         self.model.eval()
         total_loss = 0
         viz_samples = []
+        # R²(depth→spread) 评估
+        compute_r2 = self.pretrain and (self.depth_spread_weight > 0 or 
+                      getattr(self.config, 'gru2_predict_full', False))
+        r2_val = None
+        if compute_r2:
+            r2_val = self._eval_depth_spread_r2(dataloader, step=step)
+
         with torch.no_grad():
             for i, batch in enumerate(dataloader):
                 _, aux = self._compute_loss(batch, step=step or 0)
@@ -344,7 +419,129 @@ class Trainer:
         if _PIL_AVAIL and step is not None and viz_samples:
             self._save_viz_batch(viz_samples, step)
 
+        if r2_val is not None and step is not None:
+            r2_spread, r2_cov, scatter_path = r2_val
+            self.writer.add_scalar("eval/r2_depth_spread", r2_spread, step)
+            self.writer.add_scalar("eval/r2_depth2_cov", r2_cov, step)
+            log_dict = {"eval/r2_depth_spread": r2_spread, "eval/r2_depth2_cov": r2_cov}
+            if scatter_path is not None:
+                import wandb as _wb
+                log_dict["eval/depth_scatter"] = _wb.Image(scatter_path)
+            if self.wandb.enabled:
+                self.wandb.log(log_dict, step=step)
+
         return total_loss / max(1, len(dataloader))
+
+    def _eval_depth_spread_r2(self, dataloader, n_batches=10, step=None):
+        '''计算 R²(depth, alpha_spread) 和 R²(depth², alpha_coverage)，并绘制散点图。'''
+        import numpy as np
+        app_dim = self.model.appearance_dim
+        all_depths = []; all_spreads = []; all_covs = []
+        self.model.eval()
+        with torch.no_grad():
+            for i, batch in enumerate(dataloader):
+                if i >= n_batches: break
+                frames = batch["video"].to(self.device)
+                out = self.model(frames)
+                burnin_T = out["slots"]["corrected"].shape[1]
+                for t in range(burnin_T):
+                    slots_t = out["slots"]["corrected"][:, t]
+                    alpha_t = out["alpha"][:, :, t]
+                    if alpha_t.dim() == 5:
+                        alpha_2d = alpha_t.squeeze(2)
+                    else:
+                        alpha_2d = alpha_t
+                    B_a, N_a, H_a, W_a = alpha_2d.shape
+                    gy, gx = torch.meshgrid(
+                        torch.linspace(-1, 1, H_a, device=self.device),
+                        torch.linspace(-1, 1, W_a, device=self.device), indexing='ij')
+                    gx = gx.unsqueeze(0).unsqueeze(0).expand(B_a, N_a, H_a, W_a)
+                    gy = gy.unsqueeze(0).unsqueeze(0).expand(B_a, N_a, H_a, W_a)
+                    a_sum = alpha_2d.sum(dim=[-2, -1], keepdim=True) + 1e-8
+                    a_norm = alpha_2d / a_sum
+                    cx = (a_norm * gx).sum(dim=[-2, -1])
+                    cy = (a_norm * gy).sum(dim=[-2, -1])
+                    spread = torch.sqrt((a_norm * ((gx - cx.unsqueeze(-1).unsqueeze(-1)) ** 2 +
+                                                    (gy - cy.unsqueeze(-1).unsqueeze(-1)) ** 2)).sum(dim=[-2, -1]))
+                    depth = slots_t[:, :, app_dim + 2]
+                    a_max = alpha_2d.amax(dim=[-2, -1])
+                    cov = alpha_2d.sum(dim=[-2, -1])
+                    fg = (cov > 20) & (cov < 1500) & (spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+                    for s_idx in range(N_a):
+                        for b_idx in range(B_a):
+                            if fg[b_idx, s_idx]:
+                                all_depths.append(depth[b_idx, s_idx].item())
+                                all_spreads.append(spread[b_idx, s_idx].item())
+                                all_covs.append(cov[b_idx, s_idx].item())
+        HW = H_a * W_a
+        if len(all_depths) < 20:
+            return 0.0, 0.0, None
+        d = np.array(all_depths); s = np.array(all_spreads); c = np.array(all_covs) / HW
+        mask = d > 0.04
+        if mask.sum() < 20:
+            return 0.0, 0.0, None
+        dm = d[mask]; sm = s[mask]; cm = c[mask]; d2m = dm ** 2
+
+        use_prior = hasattr(self.model, 'depth_spread_a')
+        if use_prior:
+            a_val = self.model.depth_spread_a.item()
+            b_val = self.model.depth_spread_b.item()
+            c_val = self.model.depth_spread_c.item()
+            d_val = self.model.depth_spread_d.item()
+            y_pred_s = a_val * dm + c_val
+            y_pred_c = b_val * d2m + d_val
+        else:
+            coef_s = np.polyfit(dm, sm, 1)
+            y_pred_s = np.polyval(coef_s, dm)
+            coef_c = np.polyfit(d2m, cm, 1)
+            y_pred_c = np.polyval(coef_c, d2m)
+        # 用 Huber-style R²: 基于 |residual|_huber 而非 residual²，减少离群点影响
+        def huber_r2(y_true, y_pred, delta_scale=1.0):
+            res = np.abs(y_true - y_pred)
+            delta = np.median(res) * delta_scale
+            huber_res = np.where(res <= delta, 0.5 * res ** 2, delta * (res - 0.5 * delta))
+            huber_var = np.where(np.abs(y_true - y_true.mean()) <= delta,
+                                 0.5 * (y_true - y_true.mean()) ** 2,
+                                 delta * (np.abs(y_true - y_true.mean()) - 0.5 * delta))
+            return 1.0 - huber_res.sum() / max(huber_var.sum(), 1e-12)
+        r2_spread = huber_r2(sm, y_pred_s, delta_scale=1.5)
+        r2_cov = huber_r2(cm, y_pred_c, delta_scale=1.5)
+
+        # 绘制散点图
+        try:
+            import matplotlib
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+            ax = axes[0]
+            ax.scatter(dm, sm, s=2, alpha=0.2)
+            x_line = np.linspace(0, dm.max() * 1.05, 100)
+            if use_prior:
+                ax.plot(x_line, a_val * x_line + c_val, 'r-', linewidth=2, label=f'y={a_val:.3f}x+{c_val:.4f}  R²={r2_spread:.4f}')
+            else:
+                ax.plot(x_line, np.polyval(coef_s, x_line), 'r-', linewidth=2, label=f'R²={r2_spread:.4f}')
+            ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+            ax.set_xlabel('Depth'); ax.set_ylabel('Alpha Spread'); ax.set_title('Depth vs Spread'); ax.legend()
+            ax = axes[1]
+            ax.scatter(d2m, cm, s=2, alpha=0.2)
+            x_line2 = np.linspace(0, d2m.max() * 1.05, 100)
+            if use_prior:
+                ax.plot(x_line2, b_val * x_line2 + d_val, 'r-', linewidth=2, label=f'y={b_val:.3f}x+{d_val:.4f}  R²={r2_cov:.4f}')
+            else:
+                ax.plot(x_line2, np.polyval(coef_c, x_line2), 'r-', linewidth=2, label=f'R²={r2_cov:.4f}')
+            ax.set_xlim(left=0); ax.set_ylim(bottom=0)
+            ax.set_xlabel('Depth²'); ax.set_ylabel('Alpha Coverage'); ax.set_title('Depth² vs Coverage'); ax.legend()
+            plt.tight_layout()
+            scatter_dir = os.path.join(self.config.workdir, 'scatter')
+            os.makedirs(scatter_dir, exist_ok=True)
+            scatter_path = os.path.join(scatter_dir, f'eval_step{step if step else 0}.png')
+            plt.savefig(scatter_path, dpi=100)
+            plt.close(fig)
+        except Exception as e:
+            print(f"  [scatter plot failed: {e}]")
+            scatter_path = None
+
+        return float(r2_spread), float(r2_cov), scatter_path
 
     def _save_viz_batch(self, samples, step):
         '''保存 num_viz 张对比图，每张 N 行 × N 列。finetune 模式含 swap test 行。'''
@@ -572,13 +769,23 @@ class Trainer:
         '''保存完整存档，自动去除 _orig_mod 前缀。'''
         raw = self.model.state_dict()
         clean = {k.replace('_orig_mod.', ''): v for k, v in raw.items()}
-        torch.save({
+        save_dict = {
             "step": step,
             "model": clean,
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
             "loss": loss,
-        }, path)
+        }
+        # 保存 depth_spread_predictor 的独立引用（兼容旧格式加载）
+        if hasattr(self.model, 'depth_spread_predictor') and self.model.depth_spread_predictor is not None:
+            pred_sd = {}
+            for k, v in raw.items():
+                if 'depth_spread_predictor' in k:
+                    clean_k = k.replace('_orig_mod.', '').replace('depth_spread_predictor.', '').replace('net.', '')
+                    pred_sd[clean_k] = v
+            if pred_sd:
+                save_dict['predictor'] = pred_sd
+        torch.save(save_dict, path)
 
     def load_checkpoint(self, path):
         '''加载存档。自动跳过形状不匹配的 key，兼容架构变更后的续训。'''
@@ -601,13 +808,30 @@ class Trainer:
                 key_stats["other"] += 1
 
         self.model.load_state_dict(filtered, strict=False)
+        # 加载外部 depth_spread_predictor 权重（兼容旧格式存档）
+        if 'predictor' in ckpt and hasattr(self.model, 'depth_spread_predictor'):
+            try:
+                pred_sd = ckpt['predictor']
+                mapped = {}
+                for pk, pv in pred_sd.items():
+                    clean_pk = pk.replace('net.', '')
+                    target_key = f'depth_spread_predictor.{clean_pk}'
+                    if target_key in model_state and model_state[target_key].shape == pv.shape:
+                        mapped[target_key] = pv
+                if mapped:
+                    self.model.load_state_dict(mapped, strict=False)
+                    filtered.update(mapped)
+                    print(f"  Loaded external depth_spread_predictor: {len(mapped)} keys")
+            except Exception as e:
+                print(f"  Failed to load external predictor: {e}")
         if skipped or key_stats.get("other", 0) > 0:
             print(f"Checkpoint load: {len(filtered)}/{len(ckpt_state)} keys loaded, {skipped} skipped")
             print(f"  Loaded breakdown: encoder={key_stats['encoder']} slot_attn={key_stats['slot_attention']} decoder={key_stats['decoder']} other={key_stats['other']}")
-        try:
-            self.optimizer.load_state_dict(ckpt["optimizer"])
-        except (ValueError, RuntimeError) as e:
-            print(f"Optimizer state incompatible (architecture change), reinitializing: {e}")
+        if "optimizer" in ckpt:
+            try:
+                self.optimizer.load_state_dict(ckpt["optimizer"])
+            except (ValueError, RuntimeError) as e:
+                print(f"Optimizer state incompatible (architecture change), reinitializing: {e}")
         if self.scheduler and ckpt.get("scheduler"):
             try:
                 self.scheduler.load_state_dict(ckpt["scheduler"])
@@ -616,22 +840,40 @@ class Trainer:
         return ckpt.get("step", 0), ckpt.get("loss", float("inf"))
 
     def load_pretrained(self, path):
-        '''仅加载 ISA 预训练权重（encoder, slot_attention, decoder, gru2, gru2_proj, f_z）。
-        忽略预测模块（predictor, mlp_rev）的缺失/不匹配。'''
+        '''仅加载 ISA 预训练权重（encoder, slot_attention, decoder, gru2, gru2_proj, gru2_proj_posdepth, f_z）。
+        忽略预测模块（predictor, mlp_rev）的缺失/不匹配。
+        同时支持加载外部 depth_spread_predictor 权重（ckpt['predictor']）。'''
         ckpt = torch.load(path, map_location=self.device)
         model_state = self.model.state_dict()
         ckpt_state = ckpt["model"]
 
-        _isa_prefixes = ('encoder.', 'slot_attention.', 'decoder.', 'gru2.', 'gru2_proj.', 'f_z.')
+        _isa_prefixes = ('encoder.', 'slot_attention.', 'decoder.', 'gru2.', 'gru2_proj.', 'gru2_proj_posdepth.', 'f_z.')
         loaded = self._match_and_load(model_state, ckpt_state)
         loaded = {k: v for k, v in loaded.items()
                   if any(k.replace('_orig_mod.', '').startswith(p) for p in _isa_prefixes)}
 
         skipped = {k: v.shape for k, v in ckpt_state.items()
                    if not any(k.replace('_orig_mod.', '') == mk.replace('_orig_mod.', '')
-                              and v.shape == model_state[mk].shape for mk in model_state)}
+                               and v.shape == model_state[mk].shape for mk in model_state)}
 
         self.model.load_state_dict(loaded, strict=False)
+
+        # 加载外部 depth_spread_predictor 权重（如果存档中有）
+        if 'predictor' in ckpt and hasattr(self.model, 'depth_spread_predictor'):
+            try:
+                pred_sd = ckpt['predictor']
+                mapped = {}
+                for pk, pv in pred_sd.items():
+                    clean_pk = pk.replace('net.', '')
+                    target_key = f'depth_spread_predictor.{clean_pk}'
+                    if target_key in model_state and model_state[target_key].shape == pv.shape:
+                        mapped[target_key] = pv
+                if mapped:
+                    self.model.load_state_dict(mapped, strict=False)
+                    loaded.update(mapped)
+                    print(f"  Loaded depth_spread_predictor: {len(mapped)} keys")
+            except Exception as e:
+                print(f"  Failed to load external predictor: {e}")
 
         missing = set(model_state.keys()) - set(loaded.keys())
         if missing:
@@ -699,6 +941,11 @@ class Trainer:
                         self.writer.add_scalar("loss/pos", aux['loss_pos']*10, global_step)
                     if 'loss_cos' in aux:
                         self.writer.add_scalar("loss/cos", aux['loss_cos']*10, global_step)
+                    if 'loss_depth_spread' in aux:
+                        self.writer.add_scalar("loss/depth_spread", aux['loss_depth_spread']*10, global_step)
+                        self.writer.add_scalar("monitor/depth_spread_n_fg", aux.get('depth_spread_n_fg', 0), global_step)
+                    if 'loss_gru2_depth_align' in aux:
+                        self.writer.add_scalar("loss/gru2_depth_align", aux['loss_gru2_depth_align']*10, global_step)
                     self.writer.add_scalar("lr", lr, global_step)
                     self.writer.add_scalar("rev_weight", gamma, global_step)
                     self.writer.add_scalar("grad_norm", grad_norm, global_step)
@@ -707,32 +954,45 @@ class Trainer:
                     # 监控指标日志（梯度 + slot 统计）
                     monitor_keys = ['grad/encoder', 'grad/decoder',
                                     'grad/slot_attention', 'grad/predictor', 'grad/mlp_rev',
-                                    'grad/gru2', 'grad/gru2_proj',
+                                    'grad/gru2', 'grad/gru2_proj', 'grad/gru2_proj_posdepth',
+                                    'grad/depth_spread_predictor',
                                     'slot_var_across',
                                     'loss_q', 'loss_p']
                     for k in monitor_keys:
                         if k in aux:
                             self.writer.add_scalar(k, aux[k], global_step)
 
-                    # WandB
+                    # WandB — 只上传非零 lambda 对应的 loss 项
                     log_dict = {
                         "loss/total": aux.get('total', loss_val)*10,
                         "loss/recon_burnin": aux['recon_burnin']*10,
-                        "loss/recon_rollout": aux['recon_rollout']*10,
-                        "loss/slot": aux['slot_loss']*10,
-                        "loss/static": aux['static_loss']*10,
-                        "loss/rev": aux['rev_loss']*10,
-                         "loss/energy": aux['energy_loss']*10,
-                         "loss/slot_pos": aux.get('slot_loss_pos', 0)*10,
-                         "loss/slot_depth": aux.get('slot_loss_depth', 0)*10,
-                         "train/lr": lr,
+                        "train/lr": lr,
                         "train/rev_weight": gamma,
                         "train/grad_norm": grad_norm,
                         "train/rollout_actual": aux.get('rollout_actual', self.rollout),
                     }
-                    for k in ['loss_pos', 'loss_cos']:
-                        if k in aux:
-                            log_dict[f"loss/{k}"] = aux[k]*10
+                    # 按 lambda 过滤: 只上传权重>0的loss
+                    if self.lambda_recon_rollout > 0 and aux.get('recon_rollout', 0) != 0:
+                        log_dict["loss/recon_rollout"] = aux['recon_rollout']*10
+                    if self.loss_fn.lambda_slots > 0:
+                        log_dict["loss/slot"] = aux['slot_loss']*10
+                        log_dict["loss/slot_pos"] = aux.get('slot_loss_pos', 0)*10
+                        log_dict["loss/slot_depth"] = aux.get('slot_loss_depth', 0)*10
+                    if self.loss_fn.C_LC > 0:
+                        log_dict["loss/static"] = aux['static_loss']*10
+                    if self.loss_fn.lambda_rev > 0:
+                        log_dict["loss/rev"] = aux['rev_loss']*10
+                    if self.loss_fn.lambda_energy > 0:
+                        log_dict["loss/energy"] = aux['energy_loss']*10
+                    if self.lambda_pos > 0 and 'loss_pos' in aux:
+                        log_dict["loss/loss_pos"] = aux['loss_pos']*10
+                    if self.lambda_cos > 0 and 'loss_cos' in aux:
+                        log_dict["loss/loss_cos"] = aux['loss_cos']*10
+                    if self.depth_spread_weight > 0 and 'loss_depth_spread' in aux:
+                        log_dict["loss/loss_depth_spread"] = aux['loss_depth_spread']*10
+                        log_dict["monitor/depth_spread_n_fg"] = aux.get('depth_spread_n_fg', 0)
+                    if self.gru2_depth_align_weight > 0 and 'loss_gru2_depth_align' in aux:
+                        log_dict["loss/gru2_depth_align"] = aux['loss_gru2_depth_align']*10
                     for k in monitor_keys:
                         if k in aux:
                             log_dict[k] = aux[k]

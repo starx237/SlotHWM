@@ -1,0 +1,95 @@
+# Phase 2: 单帧 ISA + Depth→Spread Predictor
+# 继续从 Phase 1 存档, 加入 depth_spread_predictor 强制 depth 编码大小
+dataset: "obj3d"
+data_root: "./data/obj3d"
+num_workers: 4
+
+pretrain: true
+subsample: 2
+
+encoder_type: "cnn"
+in_channels: 3
+img_size: 64
+encoder_hidden: 64
+feat_dim: 64
+
+num_slots: 6
+appearance_dim: 64
+slot_hidden: 67
+sa_qkv_size: 64
+iters_first: 3
+iters_rest: 2
+disable_gru: false
+sa_mlp_size: 128
+grid_enc_hidden: 128
+scales_factor: 5.0
+init_with_fixed_scale: null
+add_rel_pos_to_values: true
+softmax_temperature: 1.0
+append_statistics: false
+
+static_dim: 60
+dynamic_dim: 7
+
+decoder_hidden: 64
+broadcast_size: 16
+
+hidden_dim: 256
+gru2_hidden_dim: 64
+gru2_predict_full: false
+num_heads: 4
+qkv_size: 128
+mlp_size: 256
+num_layers: 2
+h_layers: 1
+out_mlp: false
+out_hidden_layers: 1
+pre_norm: false
+dropout_rate: 0.1
+delta_t: 0.08
+integrator_method: "Euler"
+num_spatiotemporal_blocks: 2
+
+num_steps: 30000
+batch_size: 64
+learning_rate: 0.0004
+weight_decay: 0.0
+max_grad_norm: 0.05
+burnin_frames: 1
+rollout_frames: 0
+slide_stride: 4
+warmup_steps: 3000
+
+lambda_slots: 0.0
+lambda_images: 0.0
+lambda_energy: 0.0
+lambda_static: 0.0
+lambda_rev: 0.0
+lambda_recon_burnin: 1.0
+lambda_recon_rollout: 0.0
+lambda_pos: 0.2
+lambda_cos: 0.01
+gamma_max: 0.0
+c_gamma: 10.0
+rev_mlp_hidden: 128
+rev_grad_max_norm: 0.1
+
+freeze_C: true
+continue_pretrain: false
+detach_cospos: false
+depth_spread_weight: 0.1
+depth_spread_prior: true
+bnd_threshold: 0.75
+
+log_every: 10
+eval_every_steps: 2000
+viz_every_steps: 50000
+save_every: 1000
+keep_last_checkpoints: 20
+workdir: "./experiments/phase2_prior"
+
+resume: true
+resume_step: 20000
+
+# Phase 1 checkpoint
+pretrained_path: "./experiments/phase1_isa_single/checkpoints/best.pt"

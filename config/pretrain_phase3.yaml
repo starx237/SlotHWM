@@ -1,22 +1,18 @@
-# SlotPi Rollout Finetune — OBJ3D
-# Phase 4: 冻结 ISA, 训练 dynamics predictor (freeze_slot=true)
-# Phase 5: 解冻全量微调 (freeze_slot=false, 需手动修改)
+# Phase 3: 多帧 ISA + GRU2 全量预测 (app, pos, depth)
+# 从 Phase 2 存档, 冻结 ISA, 训练 GRU2 + gru2_proj_posdepth
 dataset: "obj3d"
 data_root: "./data/obj3d"
 num_workers: 4
 
-pretrain: false
-
+pretrain: true
 subsample: 2
 
-# 编码器
 encoder_type: "cnn"
 in_channels: 3
 img_size: 64
 encoder_hidden: 64
 feat_dim: 64
 
-# ISA Slot Attention
 num_slots: 6
 appearance_dim: 64
 slot_hidden: 67
@@ -32,15 +28,12 @@ add_rel_pos_to_values: true
 softmax_temperature: 1.0
 append_statistics: false
 
-# Z 空间拆分（static_dim + dynamic_dim = 67）
-static_dim: 64
-dynamic_dim: 3
+static_dim: 60
+dynamic_dim: 7
 
-# 解码器（ISA 单流 broadcast + pos_emb）
 decoder_hidden: 64
 broadcast_size: 16
 
-# 物理模块
 hidden_dim: 256
 gru2_hidden_dim: 64
 gru2_predict_full: true
@@ -51,61 +44,52 @@ num_layers: 2
 h_layers: 1
 out_mlp: false
 out_hidden_layers: 1
-pre_norm: true
+pre_norm: false
 dropout_rate: 0.1
 delta_t: 0.08
 integrator_method: "Euler"
 num_spatiotemporal_blocks: 2
 
-# 训练
-num_steps: 200000
+num_steps: 20000
 batch_size: 64
-learning_rate: 0.0002
+learning_rate: 0.0004
 weight_decay: 0.0
-max_grad_norm: 1.0
-skip_grad_norm: 10000
+max_grad_norm: 0.05
 burnin_frames: 6
-rollout_frames: 10
+rollout_frames: 0
 slide_stride: 4
-warmup_steps: 5000
+warmup_steps: 1000
 
-# 损失权重
-lambda_slots: 0.1
+lambda_slots: 0.0
 lambda_images: 0.0
-lambda_energy: 0.10
-lambda_static: 0.00
-lambda_rev: 0
-lambda_recon_burnin: 0.0
+lambda_energy: 0.0
+lambda_static: 0.0
+lambda_rev: 0.0
+lambda_recon_burnin: 1.0
 lambda_recon_rollout: 0.0
+lambda_pos: 0.2
+lambda_cos: 0.01
 gamma_max: 0.0
 c_gamma: 10.0
 rev_mlp_hidden: 128
-
 rev_grad_max_norm: 0.1
 
 freeze_C: true
-zero_init_dyn: true
-depth_max: 0.30
-delta_depth_max: 0.05
+continue_pretrain: true
+detach_cospos: true
+depth_spread_weight: 0.0
+gru2_depth_align_weight: 0.1
 bnd_threshold: 0.75
-freeze_appearance: true
-rollout_decay: 0.9
-depth_weight: 3.0
 
-# 日志与存档
 log_every: 2
 eval_every_steps: 1000
 viz_every_steps: 2000
 save_every: 1000
 keep_last_checkpoints: 20
-workdir: "./experiments/phase4_rollout"
+workdir: "./experiments/phase3_gru2_full"
 
-# 断点续训
 resume: false
 resume_step: 0
 
-# Phase 4: 冻结 ISA; Phase 5: 改为 false
-freeze_slot: true
-
-# Phase 3 checkpoint
-pretrained_path: "./experiments/phase3_gru2_full/checkpoints/best.pt"
+# Phase 2 checkpoint
+pretrained_path: "./experiments/phase2_depth_spread/checkpoints/best.pt"

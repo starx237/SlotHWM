@@ -30,6 +30,7 @@ class SlotPiLoss(nn.Module):
         self.lambda_rev = getattr(config, "lambda_rev", 0.1)
         self.freeze_appearance = getattr(config, "freeze_appearance", False)
         self.appearance_dim = getattr(config, "appearance_dim", 64)
+        self.depth_weight = getattr(config, "depth_weight", 1.0)
 
     def compute_rev_loss(self, rev_pred, S_c, T, N):
         return F.mse_loss(rev_pred, S_c.detach())
@@ -60,23 +61,39 @@ class SlotPiLoss(nn.Module):
                 pred_dyn = pred_slots[:, :, :, app_dim:]
                 target_dyn = target_slots[:, :, :, app_dim:]
                 per_elem = (pred_dyn - target_dyn) ** 2
+                dw = self.depth_weight
+                if dw != 1.0:
+                    w = torch.tensor([1.0, 1.0, dw], device=per_elem.device)
+                    per_elem = per_elem * w.view(1, 1, 1, -1)
+                    eff_dims = 2.0 + dw
+                else:
+                    eff_dims = float(pred_dyn.shape[-1])
                 masked = per_elem * mask
-                slot_val_dyn = masked.sum() / (mask.sum() * pred_dyn.shape[-1] + 1e-8)
+                slot_val_dyn = masked.sum() / (mask.sum() * eff_dims + 1e-8)
                 pred_app = pred_slots[:, :, :, :app_dim].detach()
                 target_app = target_slots[:, :, :, :app_dim]
                 slot_val_app = F.mse_loss(pred_app, target_app)
                 slot_val = slot_val_dyn + slot_val_app
                 slot_val_dyn_raw = slot_val_dyn
                 slot_val_app_raw = slot_val_app
-                # pos/depth 分解 (dyn 后3维: pos_x, pos_y, depth)
                 pos_elem = (pred_dyn[..., :2] - target_dyn[..., :2]) ** 2
                 depth_elem = (pred_dyn[..., 2:3] - target_dyn[..., 2:3]) ** 2
                 pos_val = (pos_elem * mask).sum() / (mask.sum() * 2 + 1e-8)
                 depth_val = (depth_elem * mask).sum() / (mask.sum() * 1 + 1e-8)
             else:
                 per_elem = (pred_slots - target_slots) ** 2
+                dw = self.depth_weight
+                if dw != 1.0:
+                    dyn_w = torch.cat([
+                        torch.ones(self.appearance_dim, device=per_elem.device),
+                        torch.tensor([1.0, 1.0, dw], device=per_elem.device)
+                    ])
+                    per_elem = per_elem * dyn_w.view(1, 1, 1, -1)
+                    eff_dims = float(self.appearance_dim) + 2.0 + dw
+                else:
+                    eff_dims = float(pred_slots.shape[-1])
                 masked = per_elem * mask
-                slot_val = masked.sum() / (mask.sum() * pred_slots.shape[-1] + 1e-8)
+                slot_val = masked.sum() / (mask.sum() * eff_dims + 1e-8)
                 slot_val_dyn_raw = slot_val
                 slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
                 pred_dyn = pred_slots[:, :, :, self.appearance_dim:]
@@ -90,21 +107,33 @@ class SlotPiLoss(nn.Module):
                 app_dim = self.appearance_dim
                 pred_dyn = pred_slots[:, :, :, app_dim:]
                 target_dyn = target_slots[:, :, :, app_dim:]
-                slot_val_dyn = F.mse_loss(pred_dyn, target_dyn)
+                pos_loss = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
+                depth_loss = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
+                dw = self.depth_weight
+                slot_val_dyn = (2 * pos_loss + dw * depth_loss) / (2 + dw)
                 pred_app = pred_slots[:, :, :, :app_dim].detach()
                 target_app = target_slots[:, :, :, :app_dim]
                 slot_val_app = F.mse_loss(pred_app, target_app)
                 slot_val = slot_val_dyn + slot_val_app
                 slot_val_dyn_raw = slot_val_dyn
                 slot_val_app_raw = slot_val_app
-                pos_val = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
-                depth_val = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
+                pos_val = pos_loss
+                depth_val = depth_loss
             else:
-                slot_val = F.mse_loss(pred_slots, target_slots)
-                slot_val_dyn_raw = slot_val
-                slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
+                dw = self.depth_weight
                 pred_dyn = pred_slots[:, :, :, self.appearance_dim:]
                 target_dyn = target_slots[:, :, :, self.appearance_dim:]
+                if dw != 1.0:
+                    app_loss = F.mse_loss(pred_slots[:, :, :, :self.appearance_dim],
+                                          target_slots[:, :, :, :self.appearance_dim])
+                    pos_loss = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
+                    depth_loss = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
+                    eff_dims = float(self.appearance_dim) + 2.0 + dw
+                    slot_val = (self.appearance_dim * app_loss + 2 * pos_loss + dw * depth_loss) / eff_dims
+                else:
+                    slot_val = F.mse_loss(pred_slots, target_slots)
+                slot_val_dyn_raw = slot_val
+                slot_val_app_raw = torch.tensor(0.0, device=pred_slots.device)
                 pos_val = F.mse_loss(pred_dyn[..., :2], target_dyn[..., :2])
                 depth_val = F.mse_loss(pred_dyn[..., 2:3], target_dyn[..., 2:3])
 

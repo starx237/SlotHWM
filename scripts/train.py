@@ -124,7 +124,7 @@ def main():
 
     # 加载预训练权重（仅 STATM-SAVi 部分：encoder, slot_attention, decoder）
     pretrained_path = getattr(cfg, 'pretrained_path', None)
-    if pretrained_path and not getattr(cfg, 'pretrain', False):
+    if pretrained_path:
         if os.path.isfile(pretrained_path):
             loaded, skipped = trainer.load_pretrained(pretrained_path)
             print(f"Loaded pretrained: {len(loaded)} keys matched, {len(skipped)} skipped")

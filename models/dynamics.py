@@ -102,12 +102,37 @@ class SlotDynamicsModel(nn.Module):
         self.grl = GradientReversal()
         self.mlp_rev = nn.Linear(self.dynamic_dim, self.static_dim)
 
-        # GRU2: 帧间 appearance 残差预测（从上一帧appearance预测下一帧appearance初值）
+        # GRU2: 帧间 slot 残差预测（从上一帧slot预测下一帧slot初值）
         self.gru2_hidden_dim = getattr(config, 'gru2_hidden_dim', 64)
         self.gru2 = nn.GRUCell(self.appearance_dim, self.gru2_hidden_dim)
         self.gru2_proj = nn.Linear(self.gru2_hidden_dim, self.appearance_dim)
         nn.init.zeros_(self.gru2_proj.weight)
         nn.init.zeros_(self.gru2_proj.bias)
+        self.gru2_predict_full = getattr(config, 'gru2_predict_full', False)
+        if self.gru2_predict_full:
+            self.gru2_proj_posdepth = nn.Linear(self.gru2_hidden_dim, 3)
+            nn.init.zeros_(self.gru2_proj_posdepth.weight)
+            nn.init.zeros_(self.gru2_proj_posdepth.bias)
+
+        # Depth→Spread Predictor: 迫使 ISA 把大小信息编码到 depth
+        self.depth_spread_weight = getattr(config, 'depth_spread_weight', 0.0)
+        if self.depth_spread_weight > 0:
+            use_prior = getattr(config, 'depth_spread_prior', False)
+            if use_prior:
+                self.depth_spread_predictor = None
+                self.depth_spread_a = nn.Parameter(torch.tensor(1.0))
+                self.depth_spread_b = nn.Parameter(torch.tensor(1.0))
+                self.depth_spread_c = nn.Parameter(torch.tensor(0.0))
+                self.depth_spread_d = nn.Parameter(torch.tensor(0.0))
+            else:
+                hidden = getattr(config, 'depth_spread_hidden', 32)
+                self.depth_spread_predictor = nn.Sequential(
+                    nn.Linear(1, hidden), nn.ReLU(),
+                    nn.Linear(hidden, hidden), nn.ReLU(),
+                    nn.Linear(hidden, 2),
+                )
+                nn.init.xavier_uniform_(self.depth_spread_predictor[-1].weight, gain=0.1)
+                nn.init.zeros_(self.depth_spread_predictor[-1].bias)
 
         # JEPA 组件
         if self.jepa:
@@ -151,7 +176,7 @@ class SlotDynamicsModel(nn.Module):
             self.encoder = torch.compile(self.encoder)
 
         if getattr(config, 'freeze_slot', False):
-            for name in ['encoder', 'slot_attention', 'decoder', 'gru2', 'gru2_proj']:
+            for name in ['encoder', 'slot_attention', 'decoder', 'gru2', 'gru2_proj', 'gru2_proj_posdepth', 'depth_spread_predictor']:
                 mod = getattr(self, name, None)
                 if mod is not None:
                     for p in mod.parameters():
@@ -188,14 +213,19 @@ class SlotDynamicsModel(nn.Module):
         n_iters = n_first if t == 0 else n_rest
         return mod(feat_t, slots, num_iterations=n_iters)
 
-    def _gru2_step(self, prev_appearance, gru2_hidden):
+    def _gru2_step(self, prev_appearance, gru2_hidden, prev_posdepth=None):
         B, N, D = prev_appearance.shape
         gru2_hidden = self.gru2(
             prev_appearance.reshape(-1, self.appearance_dim),
             gru2_hidden.reshape(-1, self.gru2_hidden_dim),
         )
         residual = self.gru2_proj(gru2_hidden).reshape(B, N, self.appearance_dim)
-        return prev_appearance + residual, gru2_hidden
+        new_appearance = prev_appearance + residual
+        if self.gru2_predict_full and prev_posdepth is not None:
+            residual_pd = self.gru2_proj_posdepth(gru2_hidden).reshape(B, N, 3)
+            new_posdepth = prev_posdepth + residual_pd
+            return new_appearance, new_posdepth, gru2_hidden
+        return new_appearance, gru2_hidden
 
     def _forward_pretrain(self, frames):
         B, T, C, H, W = frames.shape
@@ -208,18 +238,27 @@ class SlotDynamicsModel(nn.Module):
         slots = None
         gru2_hidden = None
         prev_appearance = None
-        use_gru2 = getattr(self.config, 'continue_pretrain', False)
+        prev_posdepth = None
+        gru2_pred_posdepth_list = []
+        use_gru2 = getattr(self.config, 'continue_pretrain', False) or self.gru2_predict_full
         for t in range(burnin):
             if t > 0 and use_gru2 and slots is not None:
-                new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
-                slots = torch.cat([
-                    new_appearance,
-                    slots[:, :, -3:-1].contiguous(),
-                    slots[:, :, -1:].contiguous(),
-                ], dim=-1)
+                if self.gru2_predict_full:
+                    new_appearance, new_posdepth, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden, prev_posdepth)
+                    gru2_pred_posdepth_list.append(new_posdepth)
+                    slots = torch.cat([new_appearance, new_posdepth], dim=-1)
+                else:
+                    new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                    slots = torch.cat([
+                        new_appearance,
+                        slots[:, :, -3:-1].contiguous(),
+                        slots[:, :, -1:].contiguous(),
+                    ], dim=-1)
             slots, attn = self._sa(feat[:, t], slots, t)
             if use_gru2:
                 prev_appearance = slots[:, :, :-3].detach()
+                if self.gru2_predict_full:
+                    prev_posdepth = slots[:, :, -3:].detach()
                 if t == 0:
                     BN = prev_appearance.shape[0] * prev_appearance.shape[1]
                     gru2_hidden = torch.zeros(BN, self.gru2_hidden_dim, device=frames.device)
@@ -252,6 +291,7 @@ class SlotDynamicsModel(nn.Module):
             "rev_pred": None,
             "S_c": None,
             "energy_pairs": None,
+            "gru2_pred_posdepth": gru2_pred_posdepth_list if gru2_pred_posdepth_list else None,
         }
 
     def _forward_finetune(self, frames):
@@ -271,20 +311,29 @@ class SlotDynamicsModel(nn.Module):
         slots = None
         gru2_hidden = None
         prev_appearance = None
+        prev_posdepth = None
+        gru2_pred_posdepth_list = []
         for t in range(burnin):
             feat_t = feat[:, t]
-            # Apply GRU2 for cross-frame appearance propagation (same as pretrain)
+            # Apply GRU2 for cross-frame slot propagation
             if t > 0 and slots is not None:
-                new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
-                slots = torch.cat([
-                    new_appearance,
-                    slots[:, :, -3:-1].contiguous(),
-                    slots[:, :, -1:].contiguous(),
-                ], dim=-1)
+                if self.gru2_predict_full:
+                    new_appearance, new_posdepth, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden, prev_posdepth)
+                    gru2_pred_posdepth_list.append(new_posdepth)
+                    slots = torch.cat([new_appearance, new_posdepth], dim=-1)
+                else:
+                    new_appearance, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                    slots = torch.cat([
+                        new_appearance,
+                        slots[:, :, -3:-1].contiguous(),
+                        slots[:, :, -1:].contiguous(),
+                    ], dim=-1)
             with torch.no_grad():
                 slots, attn = self._sa(feat_t, slots, t)
             # Store appearance for next GRU2 step
             prev_appearance = slots[:, :, :-3].detach()
+            if self.gru2_predict_full:
+                prev_posdepth = slots[:, :, -3:].detach()
             if t == 0:
                 BN = prev_appearance.shape[0] * prev_appearance.shape[1]
                 gru2_hidden = torch.zeros(BN, self.gru2_hidden_dim, device=frames.device)
@@ -344,35 +393,45 @@ class SlotDynamicsModel(nn.Module):
             for t in range(burnin, burnin + rollout):
                 feat_t = feat[:, t]
                 if gru2_hidden is not None:
-                    new_app, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
-                    s = torch.cat([new_app, s[:, :, -3:-1].contiguous(), s[:, :, -1:].contiguous()], dim=-1)
+                    if self.gru2_predict_full and prev_posdepth is not None:
+                        new_app, new_pd, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden, prev_posdepth)
+                        s = torch.cat([new_app, new_pd], dim=-1)
+                    else:
+                        new_app, gru2_hidden = self._gru2_step(prev_appearance, gru2_hidden)
+                        s = torch.cat([new_app, s[:, :, -3:-1].contiguous(), s[:, :, -1:].contiguous()], dim=-1)
                 s, attn_t = self._sa(feat_t, s, t)
                 prev_appearance = s[:, :, :-3].detach()
+                if self.gru2_predict_full:
+                    prev_posdepth = s[:, :, -3:].detach()
                 target_S_list.append(s)
             target_S = torch.stack(target_S_list, dim=1)
 
         depth_max = getattr(self.config, 'depth_max', 0.30)
         delta_depth_max = getattr(self.config, 'delta_depth_max', 0.05)
+        bnd_threshold = getattr(self.config, 'bnd_threshold', 0.75)
         with torch.no_grad():
             target_depth = target_S[:, :, :, -1]
             burnin_last_depth = burnin_S[:, -1, :, -1]
             is_bg_burnin = burnin_last_depth >= depth_max
             depth_mask = torch.ones(B, rollout, target_S.shape[2],
                                     dtype=torch.bool, device=frames.device)
+            ever_touched_bnd = torch.zeros(B, target_S.shape[2],
+                                           dtype=torch.bool, device=frames.device)
             for t in range(rollout):
                 cur_d = target_depth[:, t, :]
                 is_bg_now = cur_d >= depth_max
-                # 前景→背景: slot 从前景变成空白/背景/离开画面
                 fg_to_bg = ~is_bg_burnin & is_bg_now
-                # 背景→前景: 新物体进入
                 bg_to_fg = is_bg_burnin & ~is_bg_now
-                # 大 delta depth
                 if t == 0:
                     delta_d = (cur_d - burnin_last_depth).abs()
                 else:
                     delta_d = (cur_d - target_depth[:, t - 1, :]).abs()
                 big_delta = delta_d >= delta_depth_max
-                depth_mask[:, t, :] = ~(fg_to_bg | bg_to_fg | big_delta)
+                cur_pos_x = target_S[:, t, :, -3].abs()
+                cur_pos_y = target_S[:, t, :, -2].abs()
+                near_bnd = (cur_pos_x > bnd_threshold) | (cur_pos_y > bnd_threshold)
+                ever_touched_bnd = ever_touched_bnd | (near_bnd & ~is_bg_now)
+                depth_mask[:, t, :] = ~(fg_to_bg | bg_to_fg | big_delta | ever_touched_bnd)
 
         dec_burnin = torch.stack([self.decoder(burnin_S[:, t]) for t in range(burnin)], dim=1)
         pred_S_list = []
@@ -410,6 +469,7 @@ class SlotDynamicsModel(nn.Module):
                 "loss_q": loss_q.item(),
                 "loss_p": loss_p.item(),
             },
+            "gru2_pred_posdepth": gru2_pred_posdepth_list if gru2_pred_posdepth_list else None,
         }
 
     def _forward_jepa(self, frames):
