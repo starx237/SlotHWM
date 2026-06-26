@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 公平对比 Baseline (MLP predictor) vs Prior Phase2 的 depth-spread-cov 关系。
-3000 样本，每样本取1帧，FG filter 无 a_mean。
-两个模型都用 polyfit 线性拟合算 R²，Prior 同时显示 prior 参数预测线。
+10000 样本，Huber fit + Huber R²。
+FG filter: a_max>=0.9, depth<=0.25, pixcov > alpha_cov*0.65
 """
 
 import torch, sys, os
@@ -32,7 +32,7 @@ def load_model(cfg_dict, ckpt_path):
     return model
 
 
-def collect_data(model, ds, n_samples=3000, max_frames=1):
+def collect_data(model, ds, n_samples=10000):
     model.eval().cuda()
     app_dim = model.appearance_dim
     all_depths, all_spreads, all_covs = [], [], []
@@ -46,7 +46,7 @@ def collect_data(model, ds, n_samples=3000, max_frames=1):
             out = model(frames)
             slots_c = out['slots']['corrected'] if isinstance(out['slots'], dict) else out['slots']
             alpha = out['alpha']
-            T = min(slots_c.shape[1], max_frames)
+            T = slots_c.shape[1]
 
             for t in range(T):
                 slots_t = slots_c[:, t]
@@ -70,7 +70,10 @@ def collect_data(model, ds, n_samples=3000, max_frames=1):
                 depth = slots_t[:, :, app_dim + 2]
                 a_max = alpha_2d.amax(dim=[-2, -1])
                 cov = alpha_2d.sum(dim=[-2, -1])
-                fg = (cov > 20) & (cov < 1500) & (spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+                dominant = alpha_2d.argmax(dim=1)
+                pixcov = torch.stack([(dominant[b] == s).sum() for b in range(B) for s in range(N)]).reshape(B, N)
+                pixcov_consist = pixcov.float() > cov.float() * 0.65
+                fg = (cov > 20) & (cov < 1500) & (spread > 0.01) & (a_max >= 0.9) & (depth <= 0.25) & pixcov_consist
 
                 for b_idx in range(B):
                     for s_idx in range(N):
@@ -112,7 +115,6 @@ def main():
         cfg_dict = yaml.safe_load(f)
 
     ds = OBJ3DDataset(data_path='data/obj3d', num_frames=1, subsample=2, stride=4)
-    n_samples = 10000
 
     # === Baseline (MLP predictor, depth_spread_prior=False) ===
     print("Loading baseline model...")
@@ -121,7 +123,7 @@ def main():
     cfg_bl['continue_pretrain'] = True
     model_bl = load_model(cfg_bl, 'good_checkpoints/coveragedepth_pred_best_single.pt')
     print("Collecting baseline data...")
-    d_bl, s_bl, c_bl = collect_data(model_bl, ds, n_samples=n_samples, max_frames=1)
+    d_bl, s_bl, c_bl = collect_data(model_bl, ds)
     del model_bl; torch.cuda.empty_cache()
 
     # === Prior (ax+c, bx²+d, depth_spread_prior=True) ===
@@ -131,7 +133,7 @@ def main():
     cfg_pr['continue_pretrain'] = True
     model_pr = load_model(cfg_pr, 'experiments/phase2_depth_spread/checkpoints/best.pt')
     print("Collecting prior data...")
-    d_pr, s_pr, c_pr = collect_data(model_pr, ds, n_samples=n_samples, max_frames=1)
+    d_pr, s_pr, c_pr = collect_data(model_pr, ds)
 
     a_val = model_pr.depth_spread_a.item()
     b_val = model_pr.depth_spread_b.item()
@@ -172,7 +174,6 @@ def main():
     # === Plot ===
     fig, axes = plt.subplots(2, 2, figsize=(14, 12))
 
-    # Row 1: Baseline
     ax = axes[0, 0]
     ax.scatter(d_bl, s_bl, s=2, alpha=0.15, c='steelblue')
     x_line = np.linspace(0, d_bl.max() * 1.05, 100)
@@ -191,7 +192,6 @@ def main():
     ax.set_xlabel('Depth²'); ax.set_ylabel('Alpha Coverage (norm)')
     ax.set_title(f'Baseline: Depth² vs Coverage ({len(d_bl)} pts)'); ax.legend()
 
-    # Row 2: Prior
     ax = axes[1, 0]
     ax.scatter(d_pr, s_pr, s=2, alpha=0.15, c='darkorange')
     ax.plot(x_line, coef_s_pr[0] * x_line + coef_s_pr[1], 'b-', linewidth=2,
@@ -212,9 +212,9 @@ def main():
     ax.set_xlabel('Depth²'); ax.set_ylabel('Alpha Coverage (norm)')
     ax.set_title(f'Prior: Depth² vs Coverage ({len(d_pr)} pts)'); ax.legend()
 
-    plt.suptitle(f'Baseline vs Prior Phase2 (3000 samples, 1 frame)\n'
+    plt.suptitle(f'Baseline vs Prior Phase2 (10000 samples, FG: a_max≥0.9, d≤0.25, pixcov>0.65·acov)\n'
                  f'Baseline R²: s={r2_s_bl:.4f} c={r2_c_bl:.4f}  |  '
-                 f'Prior R²: s={r2_s_pr:.4f} c={r2_c_pr:.4f}',
+                 f'Prior R²: s={r2_s_prior:.4f} c={r2_c_prior:.4f}',
                  fontsize=11, y=1.02)
     plt.tight_layout()
     save_path = 'pos_depth_debug/baseline_vs_prior_phase2.png'

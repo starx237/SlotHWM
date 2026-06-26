@@ -245,7 +245,10 @@ class Trainer:
                         pred_cov = pred[:, :, 1]
                     a_max = alpha_2d.amax(dim=[-2, -1])
                     cov = alpha_2d.sum(dim=[-2, -1])
-                    fg = (cov > 20) & (cov < 1500) & (true_spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+                    dominant = alpha_2d.argmax(dim=1)
+                    pixcov = torch.stack([(dominant[b] == s).sum() for b in range(B_a) for s in range(N_a)]).reshape(B_a, N_a)
+                    pixcov_consist = pixcov.float() > cov.float() * 0.65
+                    fg = (cov > 20) & (cov < 1500) & (true_spread > 0.01) & (a_max > 0.7) & (depth < 0.3) & pixcov_consist
                     px = slots_t[:, :, app_dim]; py = slots_t[:, :, app_dim + 1]
                     in_bnd = (px.abs() < bnd_threshold) & (py.abs() < bnd_threshold)
                     mask = fg.detach() & in_bnd.detach()
@@ -466,7 +469,10 @@ class Trainer:
                     depth = slots_t[:, :, app_dim + 2]
                     a_max = alpha_2d.amax(dim=[-2, -1])
                     cov = alpha_2d.sum(dim=[-2, -1])
-                    fg = (cov > 20) & (cov < 1500) & (spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+                    dominant = alpha_2d.argmax(dim=1)
+                    pixcov = torch.stack([(dominant[b] == s).sum() for b in range(B_a) for s in range(N_a)]).reshape(B_a, N_a)
+                    pixcov_consist = pixcov.float() > cov.float() * 0.65
+                    fg = (cov > 20) & (cov < 1500) & (spread > 0.01) & (a_max > 0.7) & (depth < 0.3) & pixcov_consist
                     for s_idx in range(N_a):
                         for b_idx in range(B_a):
                             if fg[b_idx, s_idx]:

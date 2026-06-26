@@ -94,7 +94,7 @@ with torch.no_grad():
             cy = (a_norm * gy_b).sum(dim=[-2,-1])
             spread = torch.sqrt((a_norm * ((gx_b-cx.unsqueeze(-1).unsqueeze(-1))**2 + (gy_b-cy.unsqueeze(-1).unsqueeze(-1))**2)).sum(dim=[-2,-1]))
 
-            fg = (alpha_cov > 20) & (alpha_cov < 1500) & (spread > 0.01) & (a_max > 0.7) & (depth < 0.3)
+            fg = (alpha_cov > 20) & (alpha_cov < 1500) & (spread > 0.01) & (a_max >= 0.9) & (depth <= 0.25)
 
             for b_idx in range(B):
                 for s_idx in range(N):
@@ -159,7 +159,7 @@ ax.set_xlim(left=0); ax.set_ylim(bottom=0)
 ax.set_xlabel('Depth²'); ax.set_ylabel('Alpha Coverage (norm)')
 ax.set_title(f'Depth² vs Alpha Coverage ({len(dm)} pts)'); ax.legend()
 
-plt.suptitle(f'Prior Phase2: Depth² vs Coverage (10000 samples, FG: a_max>0.7, depth<0.3)', fontsize=11, y=1.02)
+plt.suptitle(f'Prior Phase2: Depth² vs Coverage (10000 samples, FG: a_max>=0.9, depth<=0.25)', fontsize=11, y=1.02)
 plt.tight_layout()
 plt.savefig('pos_depth_debug/depth2_vs_coverage.png', dpi=150, bbox_inches='tight')
 print(f"\nSaved to pos_depth_debug/depth2_vs_coverage.png")
